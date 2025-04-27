@@ -1,28 +1,34 @@
 {
   "expo": {
-    "name": "bettina-nysc-memories",
+    "name": "Bettina",
     "slug": "bettina-nysc-memories",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/appstore.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/splashIcon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#3DB389"
     },
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      }
+        "foregroundImage": "./assets/playstore.png",
+        "backgroundColor": "#3DB389"
+      },
+      "package": "com.simi_hillary.bettinanyscmemories"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "6d433410-9155-490c-ae35-2365effdde90"
+      }
     }
   }
 }
