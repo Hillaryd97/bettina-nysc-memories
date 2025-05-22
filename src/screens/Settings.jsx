@@ -268,12 +268,22 @@ const SettingsScreen = ({ navigation }) => {
             <Feather name="chevron-right" size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.settingItem}>
+          <TouchableOpacity
+            style={styles.settingItem}
+            onPress={() => navigation.navigate("ExportData")} // Make sure to add this screen to your navigator
+          >
             <Feather name="download" size={22} color={COLORS.text} />
             <Text style={styles.settingText}>Export Journal</Text>
             <Feather name="chevron-right" size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
-
+          <TouchableOpacity
+            style={styles.settingItem}
+            onPress={() => navigation.navigate("ImportData")}
+          >
+            <Feather name="upload" size={22} color={COLORS.text} />
+            <Text style={styles.settingText}>Import Journal</Text>
+            <Feather name="chevron-right" size={22} color={COLORS.textMuted} />
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.settingItem}
             onPress={handleClearAllData}

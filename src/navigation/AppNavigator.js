@@ -9,6 +9,8 @@ import CreateEntryScreen from '../screens/CreateEntryScreen';
 import SettingsScreen from '../screens/Settings';
 import AboutAppScreen from '../screens/AboutApp';
 import HomeScreen from '../screens/HomeScreen';
+import ExportDataScreen from '../screens/ExportDataScreen';
+import ImportDataScreen from '../screens/ImportDataScreen';
 
 const Stack = createStackNavigator();
 
@@ -42,6 +44,9 @@ const AppNavigator = () => {
         <Stack.Screen name="Settings" component={SettingsScreen} />
         <Stack.Screen name="AboutApp" component={AboutAppScreen} />
         <Stack.Screen name="HomeScreen" component={HomeScreen} />
+        <Stack.Screen name="ExportData" component={ExportDataScreen} />
+      <Stack.Screen name="ImportData" component={ImportDataScreen} />
+      
       </Stack.Navigator>
     </NavigationContainer>
   );
