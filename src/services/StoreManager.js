@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import mediaManager from "./MediaManager";
 
 // Keys for AsyncStorage
 const KEYS = {
@@ -8,6 +9,30 @@ const KEYS = {
   SERVICE_INFO: "service_info", // Add this new key
   BADGES: "user_badges",
   BADGE_PROGRESS: "badge_progress",
+};
+const safeDateConversion = (dateValue) => {
+  if (!dateValue) {
+    return new Date().toISOString();
+  }
+
+  try {
+    if (dateValue instanceof Date) {
+      if (isNaN(dateValue.getTime())) {
+        return new Date().toISOString();
+      }
+      return dateValue.toISOString();
+    }
+
+    const convertedDate = new Date(dateValue);
+    if (isNaN(convertedDate.getTime())) {
+      return new Date().toISOString();
+    }
+
+    return convertedDate.toISOString();
+  } catch (error) {
+    console.error("StorageManager safeDateConversion error:", error);
+    return new Date().toISOString();
+  }
 };
 
 /**
@@ -36,34 +61,34 @@ class StorageManager {
    */
   async saveEntry(entry) {
     try {
-      // Get existing entries
       const entries = await this.getEntries();
 
-      // Create a new entry with ID if it doesn't exist
+      // Ensure dates are properly formatted
       const newEntry = {
         ...entry,
         id: entry.id || Date.now().toString(),
-        createdAt: entry.createdAt || new Date().toISOString(),
+        date: safeDateConversion(entry.date),
+        createdAt: entry.createdAt
+          ? safeDateConversion(entry.createdAt)
+          : new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        syncStatus: "local", // 'local', 'synced', 'pendingSync'
+        syncStatus: "local",
       };
 
-      // Add to the beginning of the array for recency
+      console.log("StorageManager: Saving entry with date:", newEntry.date);
+
       const updatedEntries = [
         newEntry,
         ...entries.filter((e) => e.id !== newEntry.id),
       ];
 
-      // Save to AsyncStorage
       await AsyncStorage.setItem(KEYS.ENTRIES, JSON.stringify(updatedEntries));
-
       return newEntry.id;
     } catch (error) {
-      console.error("Error saving journal entry:", error);
+      console.error("StorageManager: Error saving journal entry:", error);
       throw error;
     }
   }
-
   /**
    * Update an existing journal entry
    * @param {String} entryId ID of the entry to update
@@ -79,10 +104,15 @@ class StorageManager {
         throw new Error("Entry not found");
       }
 
-      // Update the entry while preserving other fields
+      // Ensure date is properly formatted if it's being updated
+      const processedData = { ...updatedData };
+      if (processedData.date) {
+        processedData.date = safeDateConversion(processedData.date);
+      }
+
       entries[entryIndex] = {
         ...entries[entryIndex],
-        ...updatedData,
+        ...processedData,
         updatedAt: new Date().toISOString(),
         syncStatus:
           entries[entryIndex].syncStatus === "synced"
@@ -90,30 +120,62 @@ class StorageManager {
             : entries[entryIndex].syncStatus,
       };
 
+      console.log(
+        "StorageManager: Updated entry with date:",
+        entries[entryIndex].date
+      );
+
       await AsyncStorage.setItem(KEYS.ENTRIES, JSON.stringify(entries));
       return true;
     } catch (error) {
-      console.error("Error updating journal entry:", error);
+      console.error("StorageManager: Error updating journal entry:", error);
       return false;
     }
   }
 
   /**
-   * Delete a journal entry
+   * Delete a journal entry and its associated media files
    * @param {String} entryId ID of the entry to delete
    * @returns {Promise<Boolean>} Success status
    */
   async deleteEntry(entryId) {
     try {
       const entries = await this.getEntries();
-      const updatedEntries = entries.filter((entry) => entry.id !== entryId);
+      const entryToDelete = entries.find((entry) => entry.id === entryId);
 
-      // If no entries were removed, entry wasn't found
-      if (updatedEntries.length === entries.length) {
+      if (!entryToDelete) {
         return false;
       }
 
+      // Delete associated media files
+      if (entryToDelete.images && Array.isArray(entryToDelete.images)) {
+        for (const imageUri of entryToDelete.images) {
+          try {
+            await mediaManager.deleteFile(imageUri);
+            console.log("Deleted image:", imageUri);
+          } catch (error) {
+            console.error("Error deleting image:", imageUri, error);
+          }
+        }
+      }
+
+      if (entryToDelete.audioNotes && Array.isArray(entryToDelete.audioNotes)) {
+        for (const audioNote of entryToDelete.audioNotes) {
+          if (audioNote.uri) {
+            try {
+              await mediaManager.deleteFile(audioNote.uri);
+              console.log("Deleted audio:", audioNote.uri);
+            } catch (error) {
+              console.error("Error deleting audio:", audioNote.uri, error);
+            }
+          }
+        }
+      }
+
+      // Remove entry from storage
+      const updatedEntries = entries.filter((entry) => entry.id !== entryId);
       await AsyncStorage.setItem(KEYS.ENTRIES, JSON.stringify(updatedEntries));
+
       return true;
     } catch (error) {
       console.error("Error deleting journal entry:", error);
@@ -147,13 +209,36 @@ class StorageManager {
       const entries = await this.getEntries();
 
       return entries.filter((entry) => {
-        const entryDate = new Date(entry.date);
-        return (
-          entryDate.getMonth() === month && entryDate.getFullYear() === year
-        );
+        if (!entry.date) {
+          console.warn("StorageManager: Entry has no date:", entry.id);
+          return false;
+        }
+
+        try {
+          const entryDate = new Date(entry.date);
+          if (isNaN(entryDate.getTime())) {
+            console.warn(
+              "StorageManager: Invalid date for entry:",
+              entry.id,
+              entry.date
+            );
+            return false;
+          }
+
+          return (
+            entryDate.getMonth() === month && entryDate.getFullYear() === year
+          );
+        } catch (error) {
+          console.error(
+            "StorageManager: Error filtering entry by month:",
+            entry.id,
+            error
+          );
+          return false;
+        }
       });
     } catch (error) {
-      console.error("Error getting entries by month:", error);
+      console.error("StorageManager: Error getting entries by month:", error);
       return [];
     }
   }
@@ -247,15 +332,62 @@ class StorageManager {
         `StorageManager: Retrieved ${entries.length} entries for export`
       );
 
+      // Process entries to remove media files but keep metadata
+      const processedEntries = entries.map((entry) => {
+        const processed = { ...entry };
+
+        // Handle images - keep metadata but remove file paths
+        if (entry.images && entry.images.length > 0) {
+          processed.originalImageCount = entry.images.length;
+          processed.imageFilenames = entry.images.map((path) => {
+            // Extract just the filename from the path
+            const filename = path.split("/").pop();
+            return filename || `image_${Date.now()}.jpg`;
+          });
+          processed.hadImages = true;
+          processed.images = []; // Clear actual file paths
+        } else {
+          processed.originalImageCount = 0;
+          processed.imageFilenames = [];
+          processed.hadImages = false;
+          processed.images = [];
+        }
+
+        // Handle audio notes - keep metadata but remove file paths
+        if (entry.audioNotes && entry.audioNotes.length > 0) {
+          processed.originalAudioCount = entry.audioNotes.length;
+          processed.hadAudio = true;
+          processed.audioNotes = entry.audioNotes.map((note) => ({
+            id: note.id,
+            name: note.name,
+            date: note.date,
+            originalFilename: note.uri
+              ? note.uri.split("/").pop()
+              : "voice_note.m4a",
+            // Remove actual file path
+            uri: null,
+            isPlaceholder: true,
+          }));
+        } else {
+          processed.originalAudioCount = 0;
+          processed.hadAudio = false;
+          processed.audioNotes = [];
+        }
+
+        return processed;
+      });
+
       const exportData = {
         metadata: {
           exportDate: new Date().toISOString(),
           appVersion: "1.0.0", // Update with your actual app version
-          exportVersion: "1.1", // Increment this when export format changes
+          exportVersion: "1.2", // Increment this when export format changes
           entriesCount: entries.length,
           badgesCount: badges.length,
+          mediaNote:
+            "Photos and voice recordings remain on original device for privacy",
         },
-        entries,
+        entries: processedEntries,
         settings,
         serviceInfo,
         badges,
@@ -263,7 +395,7 @@ class StorageManager {
       };
 
       console.log("StorageManager: Export data prepared successfully");
-      return JSON.stringify(exportData, null, 2); // Pretty print for readability
+      return JSON.stringify(exportData, null, 2);
     } catch (error) {
       console.error("StorageManager: Error exporting data:", error);
       throw error;
@@ -412,22 +544,35 @@ class StorageManager {
   }
 
   /**
-   * Clear all app data
+   * Clear all app data including media files
    * @returns {Promise<Boolean>} Success status
    */
   async clearAllData() {
     try {
+      // Get all entries to clean up their media
+      const entries = await this.getEntries();
+
+      // Clean up all media files
+      await mediaManager.cleanupOrphanedFiles([]);
+
+      // Clear AsyncStorage
       await AsyncStorage.multiRemove([
         KEYS.ENTRIES,
         KEYS.USER_SETTINGS,
         KEYS.SYNC_STATUS,
+        KEYS.SERVICE_INFO,
+        KEYS.BADGES,
+        KEYS.BADGE_PROGRESS,
       ]);
+
+      console.log("All data and media files cleared");
       return true;
     } catch (error) {
       console.error("Error clearing data:", error);
       return false;
     }
   }
+
   /**
    * Get service information
    * @returns {Promise<Object|null>} Service info object or null if not found
@@ -495,6 +640,110 @@ class StorageManager {
       return false;
     }
   }
+
+  /**
+   * Perform media cleanup to remove orphaned files
+   * @returns {Promise<Object>} Cleanup results
+   */
+  async performMediaCleanup() {
+    try {
+      const entries = await this.getEntries();
+      const deletedCount = await mediaManager.cleanupOrphanedFiles(entries);
+      const storageStats = await mediaManager.getStorageStats();
+
+      return {
+        success: true,
+        deletedFiles: deletedCount,
+        stats: storageStats,
+      };
+    } catch (error) {
+      console.error("Error performing media cleanup:", error);
+      return {
+        success: false,
+        deletedFiles: 0,
+        stats: null,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Get media storage statistics
+   * @returns {Promise<Object>} Storage statistics
+   */
+  async getMediaStats() {
+    try {
+      return await mediaManager.getStorageStats();
+    } catch (error) {
+      console.error("Error getting media stats:", error);
+      return {
+        totalSizeBytes: 0,
+        totalSizeMB: "0.00",
+        imageCount: 0,
+        audioCount: 0,
+        totalFiles: 0,
+      };
+    }
+  }
+
+  async validateAndFixEntryDates() {
+    try {
+      console.log("StorageManager: Validating entry dates...");
+      const entries = await this.getEntries();
+      let fixedCount = 0;
+
+      const fixedEntries = entries.map((entry) => {
+        if (!entry.date) {
+          console.log("StorageManager: Fixing entry with no date:", entry.id);
+          entry.date = entry.createdAt || new Date().toISOString();
+          fixedCount++;
+        } else {
+          try {
+            const testDate = new Date(entry.date);
+            if (isNaN(testDate.getTime())) {
+              console.log(
+                "StorageManager: Fixing entry with invalid date:",
+                entry.id,
+                entry.date
+              );
+              entry.date = entry.createdAt || new Date().toISOString();
+              fixedCount++;
+            }
+          } catch (error) {
+            console.log(
+              "StorageManager: Fixing entry with corrupted date:",
+              entry.id
+            );
+            entry.date = entry.createdAt || new Date().toISOString();
+            fixedCount++;
+          }
+        }
+
+        // Also fix createdAt and updatedAt if needed
+        if (!entry.createdAt) {
+          entry.createdAt = entry.date || new Date().toISOString();
+        }
+        if (!entry.updatedAt) {
+          entry.updatedAt = entry.createdAt || new Date().toISOString();
+        }
+
+        return entry;
+      });
+
+      if (fixedCount > 0) {
+        console.log(
+          `StorageManager: Fixed ${fixedCount} entries with invalid dates`
+        );
+        await AsyncStorage.setItem(KEYS.ENTRIES, JSON.stringify(fixedEntries));
+      }
+
+      return { success: true, fixedCount };
+    } catch (error) {
+      console.error("StorageManager: Error validating entry dates:", error);
+      return { success: false, fixedCount: 0 };
+    }
+  }
+
   /**
    * Get all user badges
    * @returns {Promise<Array>} Array of badge objects

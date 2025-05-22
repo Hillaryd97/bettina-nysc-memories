@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from "react";
+import UpdateService from "../services/UpdateService";
+
 import {
   View,
   Text,
@@ -9,6 +11,7 @@ import {
   Linking,
   Alert,
   ActivityIndicator,
+  Animated,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
@@ -29,16 +32,84 @@ const COLORS = {
   error: "#E07D6B",
   border: "rgba(0,0,0,0.05)",
 };
+
+const GlowingMenuItem = ({ children, hasGlow, ...props }) => {
+  const [pulseAnim] = useState(new Animated.Value(1));
+
+  useEffect(() => {
+    if (hasGlow) {
+      startPulseAnimation();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [hasGlow]);
+
+  const startPulseAnimation = () => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.05,
+          duration: 1500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1500,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  };
+
+  return (
+    <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+      <TouchableOpacity {...props}>
+        {children}
+        {hasGlow && (
+          <View
+            style={{
+              position: "absolute",
+              top: 10,
+              right: 15,
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              backgroundColor: "#FF4444",
+            }}
+          />
+        )}
+      </TouchableOpacity>
+    </Animated.View>
+  );
+};
+
 const SettingsScreen = ({ navigation }) => {
   const [serviceInfo, setServiceInfo] = useState(null);
   const [daysLeft, setDaysLeft] = useState(null);
   const [showServiceInfoModal, setShowServiceInfoModal] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [hasUpdate, setHasUpdate] = useState(false);
 
   useEffect(() => {
     // Load service info on component mount
     loadServiceInfo();
   }, []);
+  useEffect(() => {
+    checkForUpdates();
+
+    // Check every few minutes
+    const interval = setInterval(checkForUpdates, 3 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const checkForUpdates = async () => {
+    try {
+      const result = await UpdateService.checkForUpdates();
+      setHasUpdate(result.hasUpdate);
+    } catch (error) {
+      console.error("Error checking for updates in settings:", error);
+    }
+  };
 
   const loadServiceInfo = async () => {
     try {
@@ -92,25 +163,6 @@ const SettingsScreen = ({ navigation }) => {
     setShowServiceInfoModal(false);
   };
 
-  const handleClearAllData = () => {
-    // First confirmation dialog
-    Alert.alert(
-      "Clear All Data",
-      "Are you sure you want to delete all journal entries and app data? This action cannot be undone.",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => showFinalConfirmation(),
-        },
-      ]
-    );
-  };
-
   // Second confirmation dialog to ensure user really wants to delete
   const showFinalConfirmation = () => {
     Alert.alert(
@@ -130,50 +182,6 @@ const SettingsScreen = ({ navigation }) => {
     );
   };
 
-  // Actual data clearing process
-  const performDataClear = async () => {
-    try {
-      setClearing(true);
-
-      // Use storage manager to clear all data
-      const success = await storageManager.clearAllData();
-
-      if (success) {
-        // Reset local state
-        setServiceInfo(null);
-        setDaysLeft(null);
-
-        Alert.alert(
-          "Data Cleared",
-          "All app data has been successfully deleted.",
-          [
-            {
-              text: "OK",
-              onPress: () => {
-                // Navigate back to initial setup or main screen
-                navigation.reset({
-                  index: 0,
-                  routes: [{ name: "HomeScreen" }], // Or whatever your onboarding/welcome screen is named
-                });
-              },
-            },
-          ]
-        );
-      } else {
-        throw new Error("Failed to clear data");
-      }
-    } catch (error) {
-      console.error("Error clearing data:", error);
-      Alert.alert(
-        "Error",
-        "There was a problem clearing your data. Please try again.",
-        [{ text: "OK" }]
-      );
-    } finally {
-      setClearing(false);
-    }
-  };
-
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView>
@@ -191,23 +199,94 @@ const SettingsScreen = ({ navigation }) => {
 
         {/* User Profile Section */}
         <View style={styles.profileSection}>
-          <View style={styles.profileImageContainer}>
-            <Feather name="user" size={36} color={COLORS.primary} />
-          </View>
+          {/* Main Profile Card */}
+          <View style={styles.profileCard}>
+            {/* Header with Name and Edit */}
+            <View style={styles.profileHeader}>
+              <View style={styles.profileTitleContainer}>
+                <Text style={styles.nameText}>
+                  {serviceInfo?.name || "Corps Member"}
+                </Text>
+                <View style={styles.nyccBadge}>
+                  <Text style={styles.nyccBadgeText}>NYSC</Text>
+                </View>
+              </View>
 
-          <Text style={styles.nameText}>
-            {serviceInfo?.name || "Corps Member"}
-          </Text>
-          <Text style={styles.stateText}>
-            {serviceInfo?.stateOfDeployment || "Your State of Deployment"}
-          </Text>
-
-          {daysLeft !== null && (
-            <View style={styles.daysLeftContainer}>
-              <Text style={styles.daysLeftText}>{daysLeft}</Text>
-              <Text style={styles.daysLeftLabel}>Days Left in Service</Text>
+              <TouchableOpacity
+                style={styles.editButton}
+                onPress={() => setShowServiceInfoModal(true)}
+              >
+                <Feather name="edit-2" size={16} color={COLORS.primary} />
+              </TouchableOpacity>
             </View>
-          )}
+
+            {/* Location Info */}
+            <View style={styles.locationRow}>
+              <Feather name="map-pin" size={16} color={COLORS.textLight} />
+              <Text style={styles.stateText}>
+                {serviceInfo?.stateOfDeployment || "Set your deployment state"}
+              </Text>
+            </View>
+
+            {/* Service Progress or Setup */}
+            {daysLeft !== null ? (
+              <View style={styles.serviceProgress}>
+                <View style={styles.progressHeader}>
+                  <Text style={styles.progressTitle}>Service Progress</Text>
+                  <Text style={styles.progressPercentage}>
+                    {Math.round(((365 - daysLeft) / 365) * 100)}%
+                  </Text>
+                </View>
+
+                <View style={styles.progressBarBackground}>
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      {
+                        width: `${Math.round(((365 - daysLeft) / 365) * 100)}%`,
+                      },
+                    ]}
+                  />
+                </View>
+
+                <View style={styles.progressStats}>
+                  <View style={styles.statItem}>
+                    <Text style={styles.statNumber}>{365 - daysLeft}</Text>
+                    <Text style={styles.statLabel}>Days Served</Text>
+                  </View>
+
+                  <View style={styles.statDivider} />
+
+                  <View style={styles.statItem}>
+                    <Text
+                      style={[styles.statNumber, { color: COLORS.primary }]}
+                    >
+                      {daysLeft}
+                    </Text>
+                    <Text style={styles.statLabel}>Days Left</Text>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.setupSection}>
+                <View style={styles.setupIconContainer}>
+                  <Feather name="calendar" size={20} color={COLORS.primary} />
+                </View>
+                <View style={styles.setupTextContainer}>
+                  <Text style={styles.setupTitle}>Complete Your Profile</Text>
+                  <Text style={styles.setupSubtitle}>
+                    Set your service dates to track your progress
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.setupButton}
+                  onPress={() => setShowServiceInfoModal(true)}
+                >
+                  <Text style={styles.setupButtonText}>Set Up</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
         </View>
 
         {/* Badges Section */}
@@ -250,14 +329,73 @@ const SettingsScreen = ({ navigation }) => {
 
         {/* Settings Options */}
         <View style={styles.settingsSection}>
-          <TouchableOpacity
+          {/* <TouchableOpacity
             style={styles.settingItem}
             onPress={() => setShowServiceInfoModal(true)}
           >
             <Feather name="user" size={22} color={COLORS.text} />
-            <Text style={styles.settingText}>Edit Profile</Text>
+            <View style={styles.settingTextContainer}>
+              <Text style={styles.settingText}>Edit Profile</Text>
+              <Text style={styles.settingSubtext} className="ml-4">
+                Update your profile information
+              </Text>
+            </View>
+            <Feather name="chevron-right" size={22} color={COLORS.textMuted} />
+          </TouchableOpacity> */}
+          <TouchableOpacity
+            style={styles.settingItem}
+            onPress={() => navigation.navigate("DataManagement")}
+          >
+            <Feather name="database" size={22} color={COLORS.text} />
+            <View style={styles.settingTextContainer}>
+              <Text style={styles.settingText}>Data Management</Text>
+              <Text style={styles.settingSubtext} className="ml-4">
+                Manage your data
+              </Text>
+            </View>
             <Feather name="chevron-right" size={22} color={COLORS.textMuted} />
           </TouchableOpacity>
+          <GlowingMenuItem
+            style={styles.settingItem}
+            onPress={() => navigation.navigate("Updates")}
+            hasGlow={hasUpdate}
+          >
+            <Feather name="smartphone" size={22} color={COLORS.text} />
+            <View style={styles.settingTextContainer}>
+              <Text style={styles.settingText}>App Updates</Text>
+              <Text style={styles.settingSubtext} className="ml-4">
+                Check for new versions
+              </Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              {hasUpdate && (
+                <View
+                  style={{
+                    backgroundColor: COLORS.primary,
+                    paddingHorizontal: 6,
+                    paddingVertical: 2,
+                    borderRadius: 10,
+                    marginRight: 8,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: COLORS.white,
+                      fontSize: 10,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    NEW
+                  </Text>
+                </View>
+              )}
+              <Feather
+                name="chevron-right"
+                size={22}
+                color={COLORS.textMuted}
+              />
+            </View>
+          </GlowingMenuItem>
 
           <TouchableOpacity
             style={styles.settingItem}
@@ -266,37 +404,6 @@ const SettingsScreen = ({ navigation }) => {
             <Feather name="info" size={22} color={COLORS.text} />
             <Text style={styles.settingText}>About Bettina</Text>
             <Feather name="chevron-right" size={22} color={COLORS.textMuted} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.settingItem}
-            onPress={() => navigation.navigate("ExportData")} // Make sure to add this screen to your navigator
-          >
-            <Feather name="download" size={22} color={COLORS.text} />
-            <Text style={styles.settingText}>Export Journal</Text>
-            <Feather name="chevron-right" size={22} color={COLORS.textMuted} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.settingItem}
-            onPress={() => navigation.navigate("ImportData")}
-          >
-            <Feather name="upload" size={22} color={COLORS.text} />
-            <Text style={styles.settingText}>Import Journal</Text>
-            <Feather name="chevron-right" size={22} color={COLORS.textMuted} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.settingItem}
-            onPress={handleClearAllData}
-            disabled={clearing}
-          >
-            {clearing ? (
-              <ActivityIndicator size="small" color={COLORS.error} />
-            ) : (
-              <Feather name="trash-2" size={22} color={COLORS.error} />
-            )}
-            <Text style={[styles.settingText, { color: COLORS.error }]}>
-              {clearing ? "Clearing Data..." : "Clear All Data"}
-            </Text>
           </TouchableOpacity>
         </View>
 
@@ -325,7 +432,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    paddingVertical: 15,
+    paddingVertical: 25,
   },
   backButton: {
     width: 40,
@@ -489,6 +596,242 @@ const styles = StyleSheet.create({
   },
   versionText: {
     color: COLORS.textMuted,
+    fontSize: 14,
+  },
+  settingTextContainer: {
+    flex: 1,
+    // marginLeft: 15,
+  },
+  settingSubtext: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  dangerItem: {
+    borderTopWidth: 1,
+    borderTopColor: "rgba(224, 125, 107, 0.2)",
+    marginTop: 10,
+    paddingTop: 20,
+  },
+  infoSection: {
+    marginHorizontal: 20,
+    marginTop: 20,
+  },
+  infoCard: {
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: 12,
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  infoText: {
+    flex: 1,
+    fontSize: 14,
+    color: COLORS.text,
+    lineHeight: 20,
+    marginLeft: 12,
+  },
+  scrollContainer: {
+    flex: 1,
+  },
+  profileSection: {
+    marginHorizontal: 20,
+    marginBottom: 25,
+    marginTop: 15,
+  },
+
+  profileCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    padding: 24,
+    shadowColor: COLORS.black,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: "rgba(61, 179, 137, 0.1)",
+  },
+
+  profileHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 16,
+  },
+
+  profileTitleContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+
+  nameText: {
+    fontSize: 24,
+    fontWeight: "700",
+    color: COLORS.text,
+    marginRight: 12,
+  },
+
+  nyccBadge: {
+    backgroundColor: COLORS.primaryLight,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+
+  nyccBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: COLORS.primary,
+    letterSpacing: 0.5,
+  },
+
+  editButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.primaryLight,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(61, 179, 137, 0.2)",
+  },
+
+  locationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 24,
+    paddingHorizontal: 4,
+  },
+
+  stateText: {
+    fontSize: 16,
+    color: COLORS.textLight,
+    marginLeft: 8,
+    fontWeight: "500",
+  },
+
+  serviceProgress: {
+    backgroundColor: COLORS.background,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: "rgba(61, 179, 137, 0.1)",
+  },
+
+  progressHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+
+  progressTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: COLORS.text,
+  },
+
+  progressPercentage: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: COLORS.primary,
+  },
+
+  progressBarBackground: {
+    height: 10,
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: 5,
+    marginBottom: 20,
+    overflow: "hidden",
+  },
+
+  progressBarFill: {
+    height: 10,
+    backgroundColor: COLORS.primary,
+    borderRadius: 5,
+  },
+
+  progressStats: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  statItem: {
+    flex: 1,
+    alignItems: "center",
+  },
+
+  statNumber: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: COLORS.text,
+    marginBottom: 4,
+  },
+
+  statLabel: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    fontWeight: "500",
+  },
+
+  statDivider: {
+    width: 1,
+    height: 40,
+    backgroundColor: COLORS.border,
+    marginHorizontal: 20,
+  },
+
+  setupSection: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(61, 179, 137, 0.2)",
+  },
+
+  setupIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.white,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 12,
+  },
+
+  setupTextContainer: {
+    flex: 1,
+    marginRight: 12,
+  },
+
+  setupTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+
+  setupSubtitle: {
+    fontSize: 13,
+    color: COLORS.textLight,
+  },
+
+  setupButton: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+
+  setupButtonText: {
+    color: COLORS.white,
+    fontWeight: "600",
     fontSize: 14,
   },
 });

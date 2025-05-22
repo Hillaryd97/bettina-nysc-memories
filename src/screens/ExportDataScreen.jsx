@@ -18,8 +18,10 @@ import * as Sharing from "expo-sharing";
 import * as Print from "expo-print";
 import * as DocumentPicker from "expo-document-picker";
 import * as MediaLibrary from "expo-media-library";
-import * as JSZip from "jszip";
+// import * as JSZip from "jszip";
 import storageManager from "../services/StoreManager";
+import { StorageAccessFramework } from "expo-file-system";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // Color scheme matching your app
 const COLORS = {
@@ -36,6 +38,44 @@ const COLORS = {
   black: "#0F1F1A",
   error: "#E07D6B",
   border: "rgba(0,0,0,0.05)",
+};
+
+const savePermissionGrantedFolderURI = async (uri) => {
+  await AsyncStorage.setItem("bettina-granted-permission-folder", uri);
+};
+
+const getPermissionGrantedFolderURI = async () => {
+  return await AsyncStorage.getItem("bettina-granted-permission-folder");
+};
+
+const checkAndGetPermissionGrantedFolderURI = async () => {
+  // Get the uri if the permission is already granted
+  const uri = await getPermissionGrantedFolderURI();
+
+  if (uri) {
+    // Check if the uri is still valid
+    try {
+      const fileInfo = await StorageAccessFramework.readDirectoryAsync(uri);
+      if (Array.isArray(fileInfo)) {
+        return uri;
+      }
+    } catch (error) {
+      console.log("Stored URI is invalid, requesting new permission");
+    }
+  }
+
+  // If not found or invalid, get the permission again
+  const permissions =
+    await StorageAccessFramework.requestDirectoryPermissionsAsync();
+
+  if (permissions.granted) {
+    // Save the permission granted folder uri and return the uri
+    await savePermissionGrantedFolderURI(permissions.directoryUri);
+    return permissions.directoryUri;
+  }
+
+  // If permission is not granted
+  return null;
 };
 
 const ExportDataScreen = ({ navigation }) => {
@@ -443,16 +483,16 @@ const ExportDataScreen = ({ navigation }) => {
           `;
 
           // Note about images if entry has images
-          if (entry.images && entry.images.length > 0) {
-            html += `
-              <div class="image-note" style="margin-top: 15px; font-size: 13px;">
-                <strong>Note:</strong> This entry contains ${
-                  entry.images.length
-                } image${entry.images.length > 1 ? "s" : ""} 
-                that are not included in this PDF. Export images separately to view them.
-              </div>
-            `;
-          }
+          // if (entry.images && entry.images.length > 0) {
+          //   html += `
+          //     <div class="image-note" style="margin-top: 15px; font-size: 13px;">
+          //       <strong>Note:</strong> This entry contains ${
+          //         entry.images.length
+          //       } image${entry.images.length > 1 ? "s" : ""}
+          //       that are not included in this PDF. Export images separately to view them.
+          //     </div>
+          //   `;
+          // }
 
           // Add tags if present
           if (entry.tags && entry.tags.length > 0) {
@@ -688,8 +728,6 @@ const ExportDataScreen = ({ navigation }) => {
         <div style="margin-top: 30px; text-align: center; font-size: 12px; color: ${
           COLORS.textMuted
         };">
-          <p>To view any images from your journal entries, please use the "Export Images" option in the app.</p>
-          <p>You can restore your full journal data by using the "Complete Backup" option.</p>
         </div>
         
       </body>
@@ -847,67 +885,161 @@ const ExportDataScreen = ({ navigation }) => {
     }
   };
 
-  // Share the exported file
-  const shareExportedFile = async () => {
+  const fallbackToShare = async () => {
     try {
-      if (!exportedFilePath) {
-        throw new Error("No file to share");
-      }
-      
-      // First check if the file exists
-      const fileInfo = await FileSystem.getInfoAsync(exportedFilePath);
-      if (!fileInfo.exists) {
-        throw new Error("File doesn't exist at path: " + exportedFilePath);
-      }
-      
-      console.log("Sharing file:", exportedFilePath);
-      
       if (await Sharing.isAvailableAsync()) {
-        try {
-          // Attempt to share
-          await Sharing.shareAsync(exportedFilePath, {
-            mimeType: exportType === 'json' 
-              ? 'application/json' 
-              : exportType === 'pdf'
-              ? 'application/pdf'
-              : 'application/zip',
-            dialogTitle: `Share your ${exportType.toUpperCase()} file`,
-            UTI: exportType === 'json' 
-              ? 'public.json' 
-              : exportType === 'pdf'
-              ? 'com.adobe.pdf'
-              : 'public.archive'
-          });
-        } catch (shareError) {
-          console.error("Share error:", shareError);
-          // If direct sharing fails, try a different approach for Android
-          if (Platform.OS === 'android') {
-            // Ensure the file exists in a more accessible location
-            const destinationUri = `${FileSystem.cacheDirectory}${exportFileName}`;
-            await FileSystem.copyAsync({
-              from: exportedFilePath,
-              to: destinationUri
-            });
-            
-            // Try sharing from cache directory
-            await Sharing.shareAsync(destinationUri);
-          } else {
-            throw shareError; // Re-throw for iOS
-          }
-        }
+        await Sharing.shareAsync(exportedFilePath, {
+          mimeType:
+            exportType === "json" ? "application/json" : "application/pdf",
+          dialogTitle: `Save ${exportFileName}`,
+        });
+
+        // Show helpful instructions after sharing
+        setTimeout(() => {
+          Alert.alert(
+            "💡 How to Save",
+            "In the share menu:\n\n• Look for 'Save to Files'\n• Or 'Save to Downloads'\n• Or choose your file manager app\n\nThe file will be saved permanently to your device.",
+            [{ text: "Got it!" }]
+          );
+        }, 1000);
       } else {
-        // If sharing is not available, provide an alternative message
         Alert.alert(
-          "Sharing Unavailable",
-          "Your device doesn't support direct sharing. The file has been saved to your app's documents folder.",
+          "Export Complete",
+          `Your ${exportType.toUpperCase()} file has been created in the app folder.`,
           [{ text: "OK" }]
         );
       }
+    } catch (shareError) {
+      console.error("Share fallback error:", shareError);
+      Alert.alert("Error", "Could not share the file. Please try again.");
+    }
+  };
+
+  // Share the exported file
+  const saveExportedFileToDevice = async () => {
+    try {
+      if (!exportedFilePath || !exportFileName) {
+        throw new Error("No file to save");
+      }
+
+      console.log("Attempting to save file:", exportedFilePath);
+
+      if (Platform.OS === "android") {
+        try {
+          // Get permission to access a folder
+          const permissionGrantedURI =
+            await checkAndGetPermissionGrantedFolderURI();
+
+          if (!permissionGrantedURI) {
+            Alert.alert(
+              "Permission Required",
+              "Please select a folder where you'd like to save your export file.",
+              [{ text: "OK" }]
+            );
+            return;
+          }
+
+          // Read the file as base64
+          const base64Data = await FileSystem.readAsStringAsync(
+            exportedFilePath,
+            {
+              encoding: FileSystem.EncodingType.Base64,
+            }
+          );
+
+          // Determine MIME type
+          const mimeType =
+            exportType === "json"
+              ? "application/json"
+              : exportType === "pdf"
+              ? "application/pdf"
+              : "application/zip";
+
+          // Create the file in the user-selected directory
+          const fileOnDeviceURI = await StorageAccessFramework.createFileAsync(
+            permissionGrantedURI,
+            exportFileName,
+            mimeType
+          );
+
+          // Write the file content
+          await FileSystem.writeAsStringAsync(fileOnDeviceURI, base64Data, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+
+          // Success!
+          Alert.alert(
+            "✅ File Saved Successfully!",
+            `${exportFileName} has been saved to your selected folder.\n\nYou can find it in your file manager or Downloads folder.`,
+            [{ text: "Done", style: "default" }]
+          );
+
+          return true;
+        } catch (androidError) {
+          console.error("Android save failed:", androidError);
+
+          // If the specific save fails, offer alternative
+          Alert.alert(
+            "Save Method Failed",
+            "We couldn't save directly to your device. Would you like to share the file instead so you can save it manually?",
+            [
+              { text: "Cancel", style: "cancel" },
+              { text: "Share File", onPress: () => fallbackToShare() },
+            ]
+          );
+          return false;
+        }
+      } else {
+        // For iOS, use the share method
+        await fallbackToShare();
+        return true;
+      }
     } catch (error) {
-      console.error("Error sharing file:", error);
+      console.error("Error saving file:", error);
+      Alert.alert(
+        "Save Failed",
+        "There was a problem saving your file. Please try again.",
+        [{ text: "OK" }]
+      );
+      return false;
+    }
+  };
+
+  const openShareDialog = async () => {
+    try {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(exportedFilePath, {
+          mimeType:
+            exportType === "json"
+              ? "application/json"
+              : exportType === "pdf"
+              ? "application/pdf"
+              : "application/zip",
+          dialogTitle: `Save your ${exportType.toUpperCase()} file`,
+          UTI:
+            exportType === "json"
+              ? "public.json"
+              : exportType === "pdf"
+              ? "com.adobe.pdf"
+              : "public.archive",
+        });
+
+        // Show instruction for users who might not know how to save
+        setTimeout(() => {
+          Alert.alert(
+            "💡 How to Save",
+            "In the share dialog, look for 'Save to Files', 'Save to Downloads', or your file manager app to permanently save the file to your device.",
+            [{ text: "Got it!" }]
+          );
+        }, 1000);
+      } else {
+        throw new Error("Sharing not available");
+      }
+    } catch (shareError) {
+      console.error("Share dialog error:", shareError);
       Alert.alert(
         "Sharing Failed",
-        "There was a problem sharing your file. Please try again.",
+        "Unable to share the file. The file has been created but may only be accessible within the app.",
         [{ text: "OK" }]
       );
     }
@@ -1062,22 +1194,30 @@ const ExportDataScreen = ({ navigation }) => {
                 </View>
                 <Text style={styles.optionTitle}>Complete Backup</Text>
                 <Text style={styles.optionDescription}>
-                  Export all your journal entries, images, and settings as a
-                  data file you can use to restore your journal on another
-                  device.
+                  Export all your journal entries and settings as a backup file.
+                  Perfect for switching devices or keeping a safe copy of your
+                  memories.
                 </Text>
                 <View style={styles.featureList}>
                   <View style={styles.featureItem}>
                     <Feather name="check" size={14} color={COLORS.primary} />
-                    <Text style={styles.featureText}>All journal entries</Text>
-                  </View>
-                  <View style={styles.featureItem}>
-                    <Feather name="check" size={14} color={COLORS.primary} />
-                    <Text style={styles.featureText}>Includes images</Text>
+                    <Text style={styles.featureText}>
+                      All journal text content
+                    </Text>
                   </View>
                   <View style={styles.featureItem}>
                     <Feather name="check" size={14} color={COLORS.primary} />
                     <Text style={styles.featureText}>Profile and settings</Text>
+                  </View>
+                  <View style={styles.featureItem}>
+                    <Feather name="check" size={14} color={COLORS.primary} />
+                    <Text style={styles.featureText}>Service year data</Text>
+                  </View>
+                  <View style={styles.featureItem}>
+                    <Feather name="info" size={14} color={COLORS.textMuted} />
+                    <Text style={styles.featureTextNote}>
+                      Media files noted but stay on device
+                    </Text>
                   </View>
                 </View>
                 <View style={styles.optionButton}>
@@ -1091,8 +1231,8 @@ const ExportDataScreen = ({ navigation }) => {
                 </View>
                 <Text style={styles.optionTitle}>PDF Journal</Text>
                 <Text style={styles.optionDescription}>
-                  Create a readable PDF document with all your journal entries
-                  that you can read, print, or share.
+                  Create a beautiful, readable PDF document of your NYSC
+                  journey. Perfect for printing or sharing your memories.
                 </Text>
                 <View style={styles.featureList}>
                   <View style={styles.featureItem}>
@@ -1100,51 +1240,26 @@ const ExportDataScreen = ({ navigation }) => {
                     <Text style={styles.featureText}>All journal entries</Text>
                   </View>
                   <View style={styles.featureItem}>
-                    <Feather name="x" size={14} color={COLORS.textMuted} />
-                    <Text style={styles.featureTextDisabled}>
-                      Images not included
+                    <Feather name="check" size={14} color={COLORS.primary} />
+                    <Text style={styles.featureText}>
+                      Timeline and statistics
                     </Text>
                   </View>
                   <View style={styles.featureItem}>
                     <Feather name="check" size={14} color={COLORS.primary} />
-                    <Text style={styles.featureText}>Printable format</Text>
+                    <Text style={styles.featureText}>
+                      Print-friendly format
+                    </Text>
+                  </View>
+                  <View style={styles.featureItem}>
+                    <Feather name="info" size={14} color={COLORS.textMuted} />
+                    <Text style={styles.featureTextNote}>
+                      Text content only
+                    </Text>
                   </View>
                 </View>
                 <View style={styles.optionButton}>
                   <Text style={styles.optionButtonText}>Create PDF</Text>
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.optionCard}
-                onPress={exportImagesAsZip}
-              >
-                <View style={styles.optionIconContainer}>
-                  <Feather name="image" size={32} color={COLORS.primary} />
-                </View>
-                <Text style={styles.optionTitle}>Export Images</Text>
-                <Text style={styles.optionDescription}>
-                  Export all images from your journal entries as a separate zip
-                  file that you can save to your device.
-                </Text>
-                <View style={styles.featureList}>
-                  <View style={styles.featureItem}>
-                    <Feather name="x" size={14} color={COLORS.textMuted} />
-                    <Text style={styles.featureTextDisabled}>
-                      No journal text
-                    </Text>
-                  </View>
-                  <View style={styles.featureItem}>
-                    <Feather name="check" size={14} color={COLORS.primary} />
-                    <Text style={styles.featureText}>All images included</Text>
-                  </View>
-                  <View style={styles.featureItem}>
-                    <Feather name="check" size={14} color={COLORS.primary} />
-                    <Text style={styles.featureText}>Organized by date</Text>
-                  </View>
-                </View>
-                <View style={styles.optionButton}>
-                  <Text style={styles.optionButtonText}>Export Images</Text>
                 </View>
               </TouchableOpacity>
             </View>
@@ -1157,8 +1272,10 @@ const ExportDataScreen = ({ navigation }) => {
                 style={styles.infoIcon}
               />
               <Text style={styles.infoText}>
-                Your data never leaves your device during export. Files are
-                created locally and only shared when you choose to.
+                Your journal text, dates, moods, and tags are exported safely.
+                Photos and voice recordings remain stored locally on your device
+                for privacy and security, but their details are noted in the
+                backup.
               </Text>
             </View>
           </>
@@ -1206,22 +1323,26 @@ const ExportDataScreen = ({ navigation }) => {
               <TouchableOpacity
                 style={[styles.modalPrimaryButton, { flex: 2 }]}
                 onPress={() => {
-                  shareExportedFile();
+                  saveExportedFileToDevice();
                   setShowCompletionModal(false);
                 }}
               >
                 <Feather
-                  name="share-2"
+                  name="save"
                   size={16}
                   color={COLORS.white}
                   style={styles.modalButtonIcon}
                 />
-                <Text style={styles.modalPrimaryButtonText}>Share/Save</Text>
+                <Text style={styles.modalPrimaryButtonText}>
+                  Save to Device
+                </Text>
               </TouchableOpacity>
             </View>
+
             <Text style={styles.modalHelpText}>
-              Use the "Share" option to save the file to your device or send it
-              to another app.
+              {Platform.OS === "android"
+                ? "The first time, you'll choose where to save your files. After that, files will automatically save to the same location."
+                : "Use the share option to save the file to your device or send it to another app."}
             </Text>
           </View>
         </View>
@@ -1493,6 +1614,18 @@ const styles = StyleSheet.create({
   },
   modalButtonIcon: {
     marginRight: 6,
+  },
+  featureTextNote: {
+    fontSize: 14,
+    color: COLORS.textMuted,
+    marginLeft: 8,
+    fontStyle: "italic",
+  },
+  featureTextNote: {
+    fontSize: 14,
+    color: COLORS.textMuted,
+    marginLeft: 8,
+    fontStyle: "italic",
   },
 });
 

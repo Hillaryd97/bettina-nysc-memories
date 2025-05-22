@@ -1,16 +1,18 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
-import { createStackNavigator } from '@react-navigation/stack';
-import { useTheme } from '../context/ThemeContext';
-import TabNavigator from './TabNavigator';
-import TimelineScreen from '../screens/TimelineScreen';
-import AllEntriesScreen from '../screens/AllEntriesScreen';
-import CreateEntryScreen from '../screens/CreateEntryScreen';
-import SettingsScreen from '../screens/Settings';
-import AboutAppScreen from '../screens/AboutApp';
-import HomeScreen from '../screens/HomeScreen';
-import ExportDataScreen from '../screens/ExportDataScreen';
-import ImportDataScreen from '../screens/ImportDataScreen';
+import React from "react";
+import { NavigationContainer } from "@react-navigation/native";
+import { createStackNavigator } from "@react-navigation/stack";
+import { useTheme } from "../context/ThemeContext";
+import TabNavigator from "./TabNavigator";
+import TimelineScreen from "../screens/TimelineScreen";
+import AllEntriesScreen from "../screens/AllEntriesScreen";
+import CreateEntryScreen from "../screens/CreateEntryScreen";
+import SettingsScreen from "../screens/Settings";
+import AboutAppScreen from "../screens/AboutApp";
+import HomeScreen from "../screens/HomeScreen";
+import ExportDataScreen from "../screens/ExportDataScreen";
+import ImportDataScreen from "../screens/ImportDataScreen";
+import UpdatesScreen from "../screens/UpdatesScreen";
+import { DataManagementScreen } from "../components/DataManagementScreen";
 
 const Stack = createStackNavigator();
 
@@ -32,7 +34,7 @@ const AppNavigator = () => {
       }}
     >
       <Stack.Navigator
-       initialRouteName="Main"
+        initialRouteName="Main"
         screenOptions={{
           headerShown: false,
         }}
@@ -45,8 +47,9 @@ const AppNavigator = () => {
         <Stack.Screen name="AboutApp" component={AboutAppScreen} />
         <Stack.Screen name="HomeScreen" component={HomeScreen} />
         <Stack.Screen name="ExportData" component={ExportDataScreen} />
-      <Stack.Screen name="ImportData" component={ImportDataScreen} />
-      
+        <Stack.Screen name="ImportData" component={ImportDataScreen} />
+        <Stack.Screen name="Updates" component={UpdatesScreen} />
+        <Stack.Screen name="DataManagement" component={DataManagementScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

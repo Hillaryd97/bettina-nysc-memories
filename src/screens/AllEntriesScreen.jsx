@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -6,14 +6,14 @@ import {
   FlatList,
   TouchableOpacity,
   TextInput,
-  ActivityIndicator
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
-import { Feather } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
-import { useJournal } from '../context/JournalContext';
-import { format } from 'date-fns';
+  ActivityIndicator,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { Feather } from "@expo/vector-icons";
+import { useFocusEffect } from "@react-navigation/native";
+import { useJournal } from "../context/JournalContext";
+import { format } from "date-fns";
 
 // Constants
 const COLORS = {
@@ -52,7 +52,7 @@ const shadowStyles = {
 const JournalEntryCard = ({ entry, onPress }) => {
   const moodIcon = () => {
     if (!entry.mood) return "star";
-    
+
     switch (entry.mood) {
       case "happy":
         return "smile";
@@ -79,17 +79,17 @@ const JournalEntryCard = ({ entry, onPress }) => {
   const formattedDate = () => {
     if (!entry.date) return "";
     const date = new Date(entry.date);
-    return format(date, 'MMM d, yyyy');
+    return format(date, "MMM d, yyyy");
   };
 
   // Create a preview from the content if needed
   const preview = () => {
     if (entry.preview) return entry.preview;
-    
+
     // Create a preview from the content
     const maxPreviewLength = 120;
     if (entry.content && entry.content.length > maxPreviewLength) {
-      return entry.content.substring(0, maxPreviewLength) + '...';
+      return entry.content.substring(0, maxPreviewLength) + "...";
     }
     return entry.content || "No content";
   };
@@ -114,7 +114,7 @@ const JournalEntryCard = ({ entry, onPress }) => {
         <Text style={styles.entryPreview} numberOfLines={2}>
           {preview()}
         </Text>
-        
+
         {entry.tags && entry.tags.length > 0 && (
           <View style={styles.tagsContainer}>
             {entry.tags.map((tag, index) => (
@@ -129,13 +129,54 @@ const JournalEntryCard = ({ entry, onPress }) => {
     </TouchableOpacity>
   );
 };
+  const serializeEntryForNavigation = (entry) => {
+    if (!entry) return null;
 
+    // Safely convert dates to timestamps
+    const safeConvertDate = (dateValue) => {
+      if (!dateValue) return new Date().getTime(); // Default to current time
+
+      try {
+        const date = safeDateConversion(dateValue);
+        return date.getTime();
+      } catch (error) {
+        console.error(
+          "Error converting date for navigation:",
+          dateValue,
+          error
+        );
+        return new Date().getTime(); // Fallback to current time
+      }
+    };
+
+    return {
+      id: entry.id,
+      title: entry.title || "",
+      content: entry.content || "",
+      formattedContent: entry.formattedContent || null,
+      mood: entry.mood || null,
+      tags: entry.tags || [],
+      images: entry.images || [],
+      date: safeConvertDate(entry.date),
+      createdAt: safeConvertDate(entry.createdAt),
+      updatedAt: safeConvertDate(entry.updatedAt),
+      audioNotes: entry.audioNotes
+        ? entry.audioNotes.map((note) => ({
+            ...note,
+            date:
+              typeof note.date === "string"
+                ? note.date
+                : new Date(note.date || new Date()).toISOString(),
+          }))
+        : [],
+    };
+  };
 const AllEntriesScreen = ({ navigation }) => {
   const { entries, isLoading, searchEntries } = useJournal();
   const [filteredEntries, setFilteredEntries] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [sortBy, setSortBy] = useState('date'); // 'date', 'title'
+  const [sortBy, setSortBy] = useState("date"); // 'date', 'title'
 
   // Load and sort entries when the screen is focused
   useFocusEffect(
@@ -144,37 +185,37 @@ const AllEntriesScreen = ({ navigation }) => {
         setRefreshing(true);
         try {
           let results;
-          
+
           if (searchQuery.trim()) {
             results = await searchEntries(searchQuery);
           } else {
             results = [...entries];
           }
-          
+
           // Sort entries
           results = sortEntries(results, sortBy);
-          
+
           setFilteredEntries(results);
         } catch (error) {
-          console.error('Error loading entries:', error);
+          console.error("Error loading entries:", error);
         } finally {
           setRefreshing(false);
         }
       };
-      
+
       loadEntries();
     }, [entries, searchQuery, sortBy])
   );
 
   // Sort entries by date (newest first) or title
   const sortEntries = (entriesToSort, sortKey) => {
-    if (sortKey === 'date') {
+    if (sortKey === "date") {
       return [...entriesToSort].sort((a, b) => {
         const dateA = new Date(a.date || a.createdAt);
         const dateB = new Date(b.date || b.createdAt);
         return dateB - dateA; // Newest first
       });
-    } else if (sortKey === 'title') {
+    } else if (sortKey === "title") {
       return [...entriesToSort].sort((a, b) => {
         return a.title.localeCompare(b.title); // Alphabetical
       });
@@ -189,15 +230,23 @@ const AllEntriesScreen = ({ navigation }) => {
 
   // Toggle sort order
   const toggleSort = () => {
-    setSortBy(sortBy === 'date' ? 'title' : 'date');
+    setSortBy(sortBy === "date" ? "title" : "date");
   };
 
   // Handle entry selection
   const handleEntryPress = (entry) => {
-    navigation.navigate('CreateEntry', {
-      mode: 'preview',
-      entry: entry
+    // Keep existing entry navigation in preview mode
+    navigation.navigate("CreateEntry", {
+      mode: "preview", // Keep preview mode for existing entries
+      entry: serializeEntryForNavigation(entry),
+      dayCount: routeDayCount,
+      totalDays: routeTotalDays,
+      monthEntries: routeMonthEntries.map(serializeEntryForNavigation),
     });
+  };
+
+  const isNewEntry = () => {
+    return !routeEntry || !routeEntry.id;
   };
 
   // Refresh entries
@@ -213,23 +262,20 @@ const AllEntriesScreen = ({ navigation }) => {
   // Render header with search and sort options
   const renderHeader = () => (
     <View style={styles.header}>
-      <TouchableOpacity 
-        style={styles.backButton} 
+      <TouchableOpacity
+        style={styles.backButton}
         onPress={() => navigation.goBack()}
       >
         <Feather name="arrow-left" size={24} color={COLORS.text} />
       </TouchableOpacity>
-      
+
       <Text style={styles.headerTitle}>All Journal Entries</Text>
-      
-      <TouchableOpacity 
-        style={styles.sortButton} 
-        onPress={toggleSort}
-      >
-        <Feather 
-          name={sortBy === 'date' ? "clock" : "type"} 
-          size={20} 
-          color={COLORS.primary} 
+
+      <TouchableOpacity style={styles.sortButton} onPress={toggleSort}>
+        <Feather
+          name={sortBy === "date" ? "clock" : "type"}
+          size={20}
+          color={COLORS.primary}
         />
       </TouchableOpacity>
     </View>
@@ -246,8 +292,8 @@ const AllEntriesScreen = ({ navigation }) => {
         style={styles.searchInput}
         placeholderTextColor={COLORS.textLight}
       />
-      {searchQuery !== '' && (
-        <TouchableOpacity onPress={() => setSearchQuery('')}>
+      {searchQuery !== "" && (
+        <TouchableOpacity onPress={() => setSearchQuery("")}>
           <Feather name="x" size={20} color={COLORS.textLight} />
         </TouchableOpacity>
       )}
@@ -270,7 +316,8 @@ const AllEntriesScreen = ({ navigation }) => {
           <Feather name="book-open" size={50} color={COLORS.primaryLight} />
           <Text style={styles.emptyStateTitle}>No Journal Entries Yet</Text>
           <Text style={styles.emptyStateText}>
-            Start capturing your service year journey by creating your first entry.
+            Start capturing your service year journey by creating your first
+            entry.
           </Text>
         </>
       )}
@@ -280,10 +327,10 @@ const AllEntriesScreen = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
-      
+
       {renderHeader()}
       {renderSearchBar()}
-      
+
       {isLoading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={COLORS.primary} />
@@ -293,14 +340,14 @@ const AllEntriesScreen = ({ navigation }) => {
           data={filteredEntries}
           keyExtractor={(item) => item.id.toString()}
           renderItem={({ item }) => (
-            <JournalEntryCard 
-              entry={item} 
+            <JournalEntryCard
+              entry={item}
               onPress={() => handleEntryPress(item)}
             />
           )}
           contentContainerStyle={[
             styles.listContent,
-            filteredEntries.length === 0 && styles.emptyListContent
+            filteredEntries.length === 0 && styles.emptyListContent,
           ]}
           ListEmptyComponent={renderEmptyState}
           refreshing={refreshing}
@@ -317,9 +364,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     paddingHorizontal: 20,
     paddingVertical: 15,
     backgroundColor: COLORS.white,
@@ -332,15 +379,15 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: "700",
     color: COLORS.text,
   },
   sortButton: {
     padding: 8,
   },
   searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: COLORS.white,
     margin: 15,
     paddingHorizontal: 15,
@@ -352,7 +399,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 8,
     marginLeft: 10,
-    fontSize: 16,
+    fontSize: 12,
     color: COLORS.text,
   },
   listContent: {
@@ -362,18 +409,18 @@ const styles = StyleSheet.create({
   },
   emptyListContent: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: "center",
   },
   loadingContainer: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
   },
   entryCard: {
     backgroundColor: COLORS.white,
     borderRadius: 16,
     marginBottom: 15,
-    overflow: 'hidden',
+    overflow: "hidden",
     ...shadowStyles.small,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -382,21 +429,21 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   entryHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    justifyContent: "space-between",
     marginBottom: 8,
-    alignItems: 'center',
+    alignItems: "center",
   },
   entryTitle: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: "600",
     color: COLORS.text,
     flex: 1,
     marginRight: 10,
   },
   entryDateBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: COLORS.primaryLight,
     borderRadius: 12,
     paddingVertical: 4,
@@ -408,7 +455,7 @@ const styles = StyleSheet.create({
   entryDateText: {
     color: COLORS.primary,
     fontSize: 13,
-    fontWeight: '500',
+    fontWeight: "500",
   },
   entryPreview: {
     color: COLORS.textLight,
@@ -421,11 +468,11 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primaryLight,
   },
   tagsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
   },
   tagChip: {
-    backgroundColor: 'rgba(61, 179, 137, 0.1)',
+    backgroundColor: "rgba(61, 179, 137, 0.1)",
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 12,
@@ -438,13 +485,13 @@ const styles = StyleSheet.create({
   },
   emptyStateContainer: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     padding: 30,
   },
   emptyStateTitle: {
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: "700",
     color: COLORS.text,
     marginTop: 20,
     marginBottom: 10,
@@ -452,7 +499,7 @@ const styles = StyleSheet.create({
   emptyStateText: {
     fontSize: 16,
     color: COLORS.textLight,
-    textAlign: 'center',
+    textAlign: "center",
   },
 });
 

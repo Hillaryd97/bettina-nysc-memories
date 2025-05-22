@@ -24,6 +24,9 @@ import { format } from "date-fns";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { useJournal } from "../context/JournalContext";
 import storageManager from "../services/StoreManager";
+import userTierManager from "../services/UserTierManager";
+import mediaManager from "../services/MediaManager";
+import serviceLockManager from "../services/ServiceLockManager";
 
 // Constants
 const COLORS = {
@@ -73,53 +76,61 @@ const shadowStyles = {
 };
 // Add this after the useEffect that loads service info
 
-const CreateEntryScreen = ({
-  route = {},
-  navigation,
-  mode = "edit", // 'edit' or 'preview'
-  initialEntry = null,
-  serviceDayCount = null, // Current day in service (can be null if no service info)
-  totalServiceDays = 365, // Total days of service
-  // Add these new props
-  monthEntries = [], // All entries for the current month
-  onDelete = null, // Function to delete the entry
-}) => {
-  // Get props from route if available
-  const routeMode = route.params?.mode || mode;
-  const routeEntry = route.params?.entry || initialEntry;
-  const routeDayCount = route.params?.dayCount || serviceDayCount;
-  const routeTotalDays = route.params?.totalDays || totalServiceDays;
-  const routeMonthEntries = route.params?.monthEntries || monthEntries;
+const CreateEntryScreen = ({ route = {}, navigation }) => {
+  // Get props from route with better validation
+  const routeMode = route.params?.mode || "edit"; // Always default to edit
+  const routeEntry = route.params?.entry || null;
+  const checkTodayEntry = route.params?.checkTodayEntry || false;
+  const [isServiceLocked, setIsServiceLocked] = useState(false);
+  const [lockMessage, setLockMessage] = useState(null);
+
+  const routeDayCount = route.params?.dayCount || null;
+  const routeTotalDays = route.params?.totalDays || 365;
+  const routeMonthEntries = route.params?.monthEntries || [];
+  const [userTier, setUserTier] = useState(userTierManager.getCurrentTier());
+  const [tierLimits, setTierLimits] = useState(userTierManager.getLimits());
+
   // State
   const [currentEntryIndex, setCurrentEntryIndex] = useState(0);
   const [entryMode, setEntryMode] = useState(routeMode);
-  const [title, setTitle] = useState(routeEntry?.title || "");
-  const [content, setContent] = useState(routeEntry?.content || "");
-  const [formattedContent, setFormattedContent] = useState(
-    routeEntry?.formattedContent || null
-  );
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [formattedContent, setFormattedContent] = useState(null);
 
   const [selectedDate, setSelectedDate] = useState(() => {
-    // Ensure proper Date object initialization from entry data
-    if (routeEntry?.date) {
-      if (typeof routeEntry.date === "number") {
-        return new Date(routeEntry.date);
-      } else if (typeof routeEntry.date === "string") {
-        return new Date(routeEntry.date);
-      } else if (routeEntry.date instanceof Date) {
-        return routeEntry.date;
+    // If we have a specific entry from navigation, use its date
+    if (routeEntry?.date && routeMode === "preview") {
+      try {
+        let dateObj;
+
+        if (typeof routeEntry.date === "number") {
+          dateObj = new Date(routeEntry.date);
+        } else if (typeof routeEntry.date === "string") {
+          dateObj = new Date(routeEntry.date);
+        } else if (routeEntry.date instanceof Date) {
+          dateObj = routeEntry.date;
+        }
+
+        if (dateObj && !isNaN(dateObj.getTime())) {
+          return dateObj;
+        }
+      } catch (error) {
+        console.error("CreateEntry: Error parsing route date:", error);
       }
     }
+
+    // Default to today for new entries or if no valid date
     return new Date();
   });
+
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [selectedMood, setSelectedMood] = useState(routeEntry?.mood || null);
-  const [tags, setTags] = useState(routeEntry?.tags || []);
+  const [selectedMood, setSelectedMood] = useState(null);
+  const [tags, setTags] = useState([]);
+  const [images, setImages] = useState([]);
   const [newTag, setNewTag] = useState("");
-  const [images, setImages] = useState(routeEntry?.images || []);
   const [recording, setRecording] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
-  const [audioNotes, setAudioNotes] = useState(routeEntry?.audioNotes || []);
+  const [audioNotes, setAudioNotes] = useState([]);
   const [playingAudio, setPlayingAudio] = useState(null);
   const [selectedFormat, setSelectedFormat] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -143,11 +154,138 @@ const CreateEntryScreen = ({
 
   // Refs
   const contentRef = useRef(null);
-  const soundObject = useRef(new Audio.Sound());
+  const soundObject = useRef(null);
 
-  // Calculate day of service
-  const formattedDate = format(selectedDate, "MMMM dd, yyyy");
-  const dayText = `Day ${routeDayCount} of ${routeTotalDays}`;
+  useEffect(() => {
+    const checkLockStatus = async () => {
+      const canEdit = await serviceLockManager.canEdit();
+      const message = await serviceLockManager.getLockMessage();
+
+      setIsServiceLocked(!canEdit);
+      setLockMessage(message);
+
+      if (!canEdit) {
+        // Force into preview mode if locked
+        setEntryMode("preview");
+      }
+    };
+
+    checkLockStatus();
+  }, []);
+
+  useEffect(() => {
+    if (checkTodayEntry && !routeEntry) {
+      // Check if there's already an entry for today
+      const today = new Date();
+      const todayEntry = entries.find((entry) => {
+        if (!entry.date) return false;
+
+        const entryDate = new Date(entry.date);
+        const todayNormalized = new Date(
+          today.getFullYear(),
+          today.getMonth(),
+          today.getDate()
+        );
+        const entryNormalized = new Date(
+          entryDate.getFullYear(),
+          entryDate.getMonth(),
+          entryDate.getDate()
+        );
+
+        return todayNormalized.getTime() === entryNormalized.getTime();
+      });
+
+      if (todayEntry) {
+        // Load the existing entry for today
+        console.log("Found existing entry for today, loading it");
+        setTitle(todayEntry.title || "");
+        setContent(todayEntry.content || "");
+        setFormattedContent(todayEntry.formattedContent || null);
+        setSelectedMood(todayEntry.mood || null);
+        setTags(Array.isArray(todayEntry.tags) ? todayEntry.tags : []);
+        setImages(Array.isArray(todayEntry.images) ? todayEntry.images : []);
+        setAudioNotes(
+          Array.isArray(todayEntry.audioNotes) ? todayEntry.audioNotes : []
+        );
+        setSelectedDate(new Date(todayEntry.date));
+
+        // Update navigation params to reflect we're editing an existing entry
+        navigation.setParams({
+          entry: todayEntry,
+          checkTodayEntry: false,
+        });
+      } else {
+        // No entry for today, start fresh with today's date
+        console.log("No entry for today, starting fresh");
+        setSelectedDate(today);
+      }
+    }
+  }, [checkTodayEntry, routeEntry, entries, navigation]);
+
+  useEffect(() => {
+    const loadTierInfo = async () => {
+      await userTierManager.loadUserTier();
+      setUserTier(userTierManager.getCurrentTier());
+      setTierLimits(userTierManager.getLimits());
+    };
+    loadTierInfo();
+  }, []);
+
+  useEffect(() => {
+    if (routeEntry) {
+      console.log("CreateEntry: Received entry data:", {
+        id: routeEntry.id,
+        title: routeEntry.title,
+        dateType: typeof routeEntry.date,
+        date: routeEntry.date,
+        mode: routeMode,
+      });
+    }
+  }, [routeEntry, routeMode]);
+
+  useEffect(() => {
+    if (routeEntry) {
+      console.log("CreateEntry: Loading entry data for:", routeEntry.id);
+
+      try {
+        // Load entry data with validation
+        setTitle(routeEntry.title || "");
+        setContent(routeEntry.content || "");
+        setFormattedContent(routeEntry.formattedContent || null);
+        setSelectedMood(routeEntry.mood || null);
+        setTags(Array.isArray(routeEntry.tags) ? routeEntry.tags : []);
+        setImages(Array.isArray(routeEntry.images) ? routeEntry.images : []);
+        setAudioNotes(
+          Array.isArray(routeEntry.audioNotes) ? routeEntry.audioNotes : []
+        );
+
+        // Handle date separately with validation
+        if (routeEntry.date) {
+          try {
+            let dateObj;
+
+            if (typeof routeEntry.date === "number") {
+              dateObj = new Date(routeEntry.date);
+            } else if (typeof routeEntry.date === "string") {
+              dateObj = new Date(routeEntry.date);
+            } else if (routeEntry.date instanceof Date) {
+              dateObj = routeEntry.date;
+            }
+
+            if (dateObj && !isNaN(dateObj.getTime())) {
+              setSelectedDate(dateObj);
+            }
+          } catch (error) {
+            console.error("CreateEntry: Error setting date:", error);
+          }
+        }
+
+        console.log("CreateEntry: Entry data loaded successfully");
+      } catch (error) {
+        console.error("CreateEntry: Error loading entry data:", error);
+      }
+    }
+  }, [routeEntry]);
 
   useEffect(() => {
     // Ensure selectedDate is always a valid Date object
@@ -202,13 +340,12 @@ const CreateEntryScreen = ({
     loadServiceInfo();
   }, []);
 
-  // 3. Replace your getMinimumDate and getMaximumDate functions with these:
   const getMinimumDate = () => {
     if (serviceInfo && serviceInfo.startDate) {
-      console.log(
-        "Using settings start date as minimum:",
-        serviceInfo.startDate
-      );
+      // console.log(
+      //   "Using settings start date as minimum:",
+      //   serviceInfo.startDate
+      // );
       return new Date(serviceInfo.startDate);
     }
 
@@ -224,7 +361,7 @@ const CreateEntryScreen = ({
 
     if (serviceInfo && serviceInfo.endDate) {
       const endDate = new Date(serviceInfo.endDate);
-      console.log("Using settings end date:", endDate);
+      // console.log("Using settings end date:", endDate);
 
       // Return the earlier of today or end date
       return endDate < today ? endDate : today;
@@ -234,42 +371,133 @@ const CreateEntryScreen = ({
   };
   const minValidDate = getMinimumDate();
   const maxValidDate = getMaximumDate();
-  console.log("Date picker valid range:", {
-    min: minValidDate,
-    max: maxValidDate,
-  });
+  // console.log("Date picker valid range:", {
+  //   min: minValidDate,
+  //   max: maxValidDate,
+  // });
+
+  const safeDateConversion = (dateValue) => {
+    if (!dateValue) {
+      console.warn("safeDateConversion: Received null/undefined date");
+      return new Date(); // Return current date as fallback
+    }
+
+    try {
+      // If it's already a Date object
+      if (dateValue instanceof Date) {
+        if (isNaN(dateValue.getTime())) {
+          console.warn("safeDateConversion: Invalid Date object");
+          return new Date();
+        }
+        return dateValue;
+      }
+
+      // If it's a string or number, convert to Date
+      const convertedDate = new Date(dateValue);
+      if (isNaN(convertedDate.getTime())) {
+        console.warn(
+          "safeDateConversion: Could not convert to valid date:",
+          dateValue
+        );
+        return new Date();
+      }
+
+      return convertedDate;
+    } catch (error) {
+      console.error("safeDateConversion: Error converting date:", error);
+      return new Date();
+    }
+  };
+
   const serializeEntryForNavigation = (entry) => {
     if (!entry) return null;
 
-    // Create a copy of the entry with dates converted to timestamps
+    // Safely convert dates to timestamps
+    const safeConvertDate = (dateValue) => {
+      if (!dateValue) return new Date().getTime(); // Default to current time
+
+      try {
+        const date = safeDateConversion(dateValue);
+        return date.getTime();
+      } catch (error) {
+        console.error(
+          "Error converting date for navigation:",
+          dateValue,
+          error
+        );
+        return new Date().getTime(); // Fallback to current time
+      }
+    };
+
     return {
-      ...entry,
-      date: entry.date ? entry.date.getTime() : null,
-      createdAt: entry.createdAt ? entry.createdAt.getTime() : null,
-      updatedAt: entry.updatedAt ? entry.updatedAt.getTime() : null,
-      // Convert dates in audio notes if they exist
+      id: entry.id,
+      title: entry.title || "",
+      content: entry.content || "",
+      formattedContent: entry.formattedContent || null,
+      mood: entry.mood || null,
+      tags: entry.tags || [],
+      images: entry.images || [],
+      date: safeConvertDate(entry.date),
+      createdAt: safeConvertDate(entry.createdAt),
+      updatedAt: safeConvertDate(entry.updatedAt),
       audioNotes: entry.audioNotes
         ? entry.audioNotes.map((note) => ({
             ...note,
             date:
               typeof note.date === "string"
                 ? note.date
-                : new Date(note.date).toISOString(),
+                : new Date(note.date || new Date()).toISOString(),
           }))
         : [],
     };
   };
 
   // Reset audio on unmount
+  // Initialize sound object properly
   useEffect(() => {
+    const initializeAudio = async () => {
+      try {
+        // Set audio mode
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true,
+        });
+
+        // Create sound object
+        soundObject.current = new Audio.Sound();
+      } catch (error) {
+        console.error("Error initializing audio:", error);
+      }
+    };
+
+    initializeAudio();
+
+    // Cleanup function
     return () => {
-      if (recording) {
-        stopRecording();
-      }
-      if (playingAudio) {
-        stopAudio();
-      }
-      soundObject.current = null;
+      const cleanup = async () => {
+        try {
+          if (recording) {
+            await stopRecording();
+          }
+          if (playingAudio) {
+            setPlayingAudio(null);
+          }
+
+          // Cleanup sound object
+          if (soundObject.current) {
+            try {
+              await soundObject.current.unloadAsync();
+            } catch (error) {
+              // Ignore unload errors during cleanup
+            }
+            soundObject.current = null;
+          }
+        } catch (error) {
+          console.error("Cleanup error:", error);
+        }
+      };
+
+      cleanup();
     };
   }, []);
 
@@ -295,6 +523,7 @@ const CreateEntryScreen = ({
       }
     })();
   }, []);
+
   useEffect(() => {
     if (routeEntry && routeMonthEntries.length > 0) {
       const index = routeMonthEntries.findIndex(
@@ -302,9 +531,30 @@ const CreateEntryScreen = ({
       );
       if (index !== -1) {
         setCurrentEntryIndex(index);
+        console.log("CreateEntry: Set current entry index to:", index);
+      } else {
+        console.warn("CreateEntry: Could not find entry in month entries");
       }
     }
   }, [routeEntry, routeMonthEntries]);
+
+  // Add this utility function to show time manipulation warnings:
+  const showTimeManipulationWarning = (manipulationData) => {
+    if (manipulationData.confidence > 75) {
+      Alert.alert(
+        "Security Alert",
+        "Significant time inconsistencies detected. The app may restrict editing features to maintain journal integrity.",
+        [{ text: "Understand" }]
+      );
+    } else if (manipulationData.confidence > 50) {
+      // Show a less severe warning
+      console.warn(
+        "Moderate time manipulation detected:",
+        manipulationData.reasons
+      );
+    }
+  };
+
   const loadEntry = (entry) => {
     setTitle(entry.title || "");
     setContent(entry.content || "");
@@ -444,113 +694,91 @@ const CreateEntryScreen = ({
     });
   };
 
-  // Handle text formatting
-  const applyFormat = (format) => {
-    if (entryMode === "preview") return;
-
-    setSelectedFormat(format);
-
-    // Apply formatting to the selected text
-    if (selectionStart !== selectionEnd) {
-      const selectedText = content.substring(selectionStart, selectionEnd);
-      let formattedText;
-      let newCursorPosition;
-
-      switch (format) {
-        case "bold":
-          formattedText = `**${selectedText}**`;
-          newCursorPosition = selectionEnd + 4; // Add 4 for the ** markers
-          break;
-        case "italic":
-          formattedText = `_${selectedText}_`;
-          newCursorPosition = selectionEnd + 2; // Add 2 for the _ markers
-          break;
-        case "underline":
-          formattedText = `__${selectedText}__`;
-          newCursorPosition = selectionEnd + 4; // Add 4 for the __ markers
-          break;
-        case "bullet":
-          // Split by new lines and add bullets
-          formattedText = selectedText
-            .split("\n")
-            .map((line) => (line.trim() ? `• ${line}` : line))
-            .join("\n");
-          newCursorPosition = selectionStart + formattedText.length;
-          break;
-        default:
-          return;
-      }
-
-      // Replace the selected text with the formatted text
-      const newContent =
-        content.substring(0, selectionStart) +
-        formattedText +
-        content.substring(selectionEnd);
-
-      setContent(newContent);
-
-      // Store formatting information for rendering
-      const formattingInfo = formattedContent || [];
-      formattingInfo.push({
-        type: format,
-        start: selectionStart,
-        end: selectionStart + formattedText.length,
-        text: formattedText,
-      });
-
-      setFormattedContent(formattingInfo);
-    } else {
-      // If no text is selected, prepare to format the next typed text
-      switch (format) {
-        case "bullet":
-          // Add a bullet at the cursor position
-          const newContent =
-            content.substring(0, selectionStart) +
-            "• " +
-            content.substring(selectionEnd);
-
-          setContent(newContent);
-          break;
-        default:
-          // Other formats will be applied when text is typed
-          break;
-      }
-    }
-  };
-
   // Handle image picking
   const pickImage = async (useCamera = false) => {
-    if (entryMode === "preview") return;
+    if (entryMode === "preview" || isServiceLocked) return;
+    // Check tier limits
+    if (!userTierManager.canAddImage(images.length)) {
+      Alert.alert(
+        "Image Limit Reached",
+        userTierManager.getUpgradeMessage("images"),
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Upgrade",
+            onPress: () => {
+              // Navigate to upgrade screen or show upgrade modal
+              console.log("Navigate to upgrade screen");
+            },
+          },
+        ]
+      );
+      return;
+    }
 
     try {
       let result;
 
+      const imagePickerOptions = {
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        quality: 0.8,
+        // Add these options for better cropping experience
+        allowsMultipleSelection: false,
+        selectionLimit: 3,
+      };
+
       if (useCamera) {
-        result = await ImagePicker.launchCameraAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          allowsEditing: true,
-          aspect: [4, 3],
-          quality: 1,
-        });
+        result = await ImagePicker.launchCameraAsync(imagePickerOptions);
       } else {
-        result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          allowsEditing: true,
-          aspect: [4, 3],
-          quality: 1,
-        });
+        result = await ImagePicker.launchImageLibraryAsync(imagePickerOptions);
       }
 
-      if (!result.canceled) {
-        setImages([...images, result.assets[0].uri]);
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const tempUri = result.assets[0].uri;
+
+        // Generate a temporary entry ID if we don't have one yet
+        const entryId = routeEntry?.id || `temp_${Date.now()}`;
+
+        // Save image to permanent storage
+        const permanentUri = await mediaManager.saveImage(tempUri, entryId);
+
+        // Add permanent URI to images array
+        setImages([...images, permanentUri]);
+
+        console.log("Image saved successfully:", permanentUri);
       }
     } catch (error) {
-      console.log("Error picking image:", error);
+      console.error("Error picking/saving image:", error);
+      Alert.alert("Error", "Failed to save image. Please try again.", [
+        { text: "OK" },
+      ]);
     }
   };
 
   // Handle audio recording
   const startRecording = async () => {
+    if (entryMode === "preview" || isServiceLocked) return;
+
+    // Check tier limits
+    if (!userTierManager.canAddAudio(audioNotes.length)) {
+      Alert.alert(
+        "Audio Limit Reached",
+        userTierManager.getUpgradeMessage("audio"),
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Upgrade",
+            onPress: () => {
+              // Navigate to upgrade screen or show upgrade modal
+              console.log("Navigate to upgrade screen");
+            },
+          },
+        ]
+      );
+      return;
+    }
+
     try {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
@@ -597,12 +825,35 @@ const CreateEntryScreen = ({
 
   // Audio playback
   const playAudio = async (audioNote) => {
-    // Stop current audio if playing
-    if (playingAudio) {
-      await stopAudio();
-    }
-
     try {
+      // Stop current audio if playing
+      if (playingAudio) {
+        await stopAudio();
+      }
+
+      console.log("Playing audio:", audioNote.name);
+
+      // Make sure sound object exists
+      if (!soundObject.current) {
+        console.log("Creating new sound object");
+        soundObject.current = new Audio.Sound();
+      }
+
+      // Unload any previous sound first
+      try {
+        const status = await soundObject.current.getStatusAsync();
+        if (status.isLoaded) {
+          await soundObject.current.unloadAsync();
+        }
+      } catch (unloadError) {
+        console.log(
+          "Sound not loaded or error unloading:",
+          unloadError.message
+        );
+      }
+
+      // Load and play new sound
+      console.log("Loading audio from:", audioNote.uri);
       await soundObject.current.loadAsync({ uri: audioNote.uri });
       await soundObject.current.playAsync();
       setPlayingAudio(audioNote.id);
@@ -610,26 +861,55 @@ const CreateEntryScreen = ({
       // Update state when playback finishes
       soundObject.current.setOnPlaybackStatusUpdate((status) => {
         if (status.didJustFinish) {
+          console.log("Audio finished playing");
           setPlayingAudio(null);
+          // Unload the sound after playing
+          soundObject.current.unloadAsync().catch((error) => {
+            console.log("Error unloading after finish:", error.message);
+          });
         }
       });
     } catch (error) {
-      console.log("Error playing audio:", error);
+      console.error("Error playing audio:", error);
       setPlayingAudio(null);
+
+      // Try to recover by creating new sound object
+      try {
+        if (soundObject.current) {
+          await soundObject.current.unloadAsync();
+        }
+      } catch (recoveryError) {
+        // Ignore recovery errors
+      }
+
+      // Create fresh sound object for next attempt
+      soundObject.current = new Audio.Sound();
     }
   };
 
   const stopAudio = async () => {
-    if (!playingAudio) return;
+    if (!playingAudio || !soundObject.current) return;
 
     try {
-      await soundObject.current.stopAsync();
-      await soundObject.current.unloadAsync();
+      console.log("Stopping audio");
+
+      // Check if sound is loaded before trying to stop
+      const status = await soundObject.current.getStatusAsync();
+      if (status.isLoaded) {
+        await soundObject.current.stopAsync();
+        await soundObject.current.unloadAsync();
+      }
+
       setPlayingAudio(null);
     } catch (error) {
-      console.log("Error stopping audio:", error);
+      console.error("Error stopping audio:", error);
+      setPlayingAudio(null);
+
+      // Create fresh sound object
+      soundObject.current = new Audio.Sound();
     }
   };
+
   const navigateToPreviousEntry = () => {
     if (currentEntryIndex > 0) {
       const prevEntry = routeMonthEntries[currentEntryIndex - 1];
@@ -679,7 +959,7 @@ const CreateEntryScreen = ({
         await deleteEntry(routeEntry.id);
 
         // Navigate back after deletion
-        navigation.goBack();
+        navigation.navigate("Main", { screen: "Home" });
       }
     } catch (error) {
       console.error("Error deleting entry:", error);
@@ -719,16 +999,24 @@ const CreateEntryScreen = ({
   // Save entry
   const saveEntry = async () => {
     if (title.trim() === "") {
-      alert("Please enter a title for your journal entry");
+      Alert.alert(
+        "Missing Title",
+        "Please enter a title for your journal entry"
+      );
       return;
     }
+
+    // Store checkpoint before saving
+    await serviceLockManager.storeTimeCheckpoint("entry_save");
 
     setIsSaving(true);
 
     try {
-      // Structure the entry data
+      const isCreatingNew = !routeEntry || !routeEntry.id;
+      const entryId = isCreatingNew ? `entry_${Date.now()}` : routeEntry.id;
+
       const entryData = {
-        id: routeEntry?.id || undefined, // Let storage manager assign ID if new
+        id: entryId,
         title,
         content,
         formattedContent,
@@ -739,22 +1027,18 @@ const CreateEntryScreen = ({
         audioNotes,
       };
 
-      // Save to storage
-      if (routeEntry?.id) {
-        // Update existing entry
-        await updateEntry(routeEntry.id, entryData);
-      } else {
-        // Add new entry
+      if (isCreatingNew) {
         await addEntry(entryData);
+        console.log("Created new entry:", entryId);
+      } else {
+        await updateEntry(routeEntry.id, entryData);
+        console.log("Updated existing entry:", entryId);
       }
 
-      // Navigate back
-      if (navigation) {
-        navigation.goBack();
-      }
+      navigation.navigate("Main", { screen: "Home" });
     } catch (error) {
       console.error("Error saving entry:", error);
-      alert("Failed to save entry. Please try again.");
+      Alert.alert("Save Failed", "Failed to save entry. Please try again.");
     } finally {
       setIsSaving(false);
     }
@@ -777,26 +1061,6 @@ const CreateEntryScreen = ({
   const getFormattedDate = () => {
     if (!selectedDate) return "";
     return format(selectedDate, "MMMM dd, yyyy");
-  };
-  // Add this function to calculate the day count for the selected date
-  const calculateDayCount = (date) => {
-    if (!serviceInfo?.startDate) {
-      return null; // No service info, return null
-    }
-
-    const startDate = new Date(serviceInfo.startDate);
-    const currentDate = new Date(date);
-
-    // Reset time components for proper comparison
-    startDate.setHours(0, 0, 0, 0);
-    currentDate.setHours(0, 0, 0, 0);
-
-    // Calculate the difference in days
-    const diffTime = Math.abs(currentDate - startDate);
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-    // Add 1 because the start day is day 1
-    return diffDays + 1;
   };
 
   // Get service day text or empty if no service info
@@ -848,6 +1112,31 @@ const CreateEntryScreen = ({
     return <Text style={styles.previewContent}>{displayText}</Text>;
   };
 
+  const renderTierInfo = () => {
+    if (entryMode === "preview") return null;
+
+    return (
+      <View style={styles.tierInfoContainer}>
+        <View style={styles.tierLimitsRow}>
+          <Text style={styles.tierLimitText}>
+            Images: {images.length}/{tierLimits.maxImagesPerEntry}
+          </Text>
+          <Text style={styles.tierLimitText}>
+            Audio: {audioNotes.length}/{tierLimits.maxAudioNotesPerEntry}
+          </Text>
+          {!userTierManager.isPremium() && (
+            <TouchableOpacity
+              style={styles.upgradeButton}
+              onPress={() => console.log("Show upgrade modal")}
+            >
+              <Text style={styles.upgradeButtonText}>Upgrade</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
+  };
+
   // Platform-specific date picker implementation
   const showDatePickerModal = () => {
     // First check if we have service info
@@ -888,7 +1177,7 @@ const CreateEntryScreen = ({
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => navigation?.goBack()}
+          onPress={() => navigation.navigate("Main", { screen: "Home" })}
           accessibilityLabel="Go back"
         >
           <Feather name="arrow-left" size={24} color={COLORS.text} />
@@ -907,43 +1196,17 @@ const CreateEntryScreen = ({
             disabled={entryMode !== "edit"}
           >
             <Text style={styles.dateText}>{getFormattedDate()}</Text>
-            {/* {entryMode === "edit" && (
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <Feather name="calendar" size={16} color={COLORS.primary} />
-                <Text
-                  style={{
-                    fontSize: 10,
-                    color: COLORS.textMuted,
-                    marginLeft: 4,
-                  }}
-                >
-                  {serviceInfo?.startDate
-                    ? `(${format(
-                        new Date(serviceInfo.startDate),
-                        "MMM d, yyyy"
-                      )} - Today)`
-                    : "(Select a date)"}
-                </Text>
-              </View>
-            )} */}
           </TouchableOpacity>
         </View>
 
+        {/* Updated header actions based on entry state */}
         <View style={styles.headerActions}>
-          {entryMode === "edit" ? (
-            <>
-              <TouchableOpacity
-                style={styles.actionButton}
-                onPress={toggleMode}
-                accessibilityLabel="Preview entry"
-              >
-                <Feather name="eye" size={20} color={COLORS.primary} />
-              </TouchableOpacity>
-
+          {!routeEntry || !routeEntry.id ? (
+            // New entry - only show save if not locked
+            !isServiceLocked && (
               <TouchableOpacity
                 style={[styles.actionButton, styles.saveButton]}
                 onPress={saveEntry}
-                accessibilityLabel="Save entry"
                 disabled={isSaving}
               >
                 {isSaving ? (
@@ -952,24 +1215,49 @@ const CreateEntryScreen = ({
                   <Text style={styles.saveButtonText}>Save</Text>
                 )}
               </TouchableOpacity>
-            </>
+            )
           ) : (
+            // Existing entry - show appropriate buttons
             <>
-              <TouchableOpacity
-                style={styles.actionButton}
-                onPress={toggleMode}
-                accessibilityLabel="Edit entry"
-              >
-                <Feather name="edit-2" size={20} color={COLORS.primary} />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.actionButton, styles.deleteButton]}
-                onPress={confirmDeleteEntry}
-                accessibilityLabel="Delete entry"
-              >
-                <Feather name="trash-2" size={20} color={COLORS.error} />
-              </TouchableOpacity>
+              {entryMode === "edit" && !isServiceLocked ? (
+                <>
+                  <TouchableOpacity
+                    style={styles.actionButton}
+                    onPress={toggleMode}
+                  >
+                    <Feather name="eye" size={20} color={COLORS.primary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.actionButton, styles.saveButton]}
+                    onPress={saveEntry}
+                    disabled={isSaving}
+                  >
+                    {isSaving ? (
+                      <ActivityIndicator size="small" color={COLORS.white} />
+                    ) : (
+                      <Text style={styles.saveButtonText}>Save</Text>
+                    )}
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  {!isServiceLocked && (
+                    <TouchableOpacity
+                      style={styles.actionButton}
+                      onPress={toggleMode}
+                    >
+                      <Feather name="edit-2" size={20} color={COLORS.primary} />
+                    </TouchableOpacity>
+                  )}
+                  {/* Delete button always available in preview mode */}
+                  <TouchableOpacity
+                    style={[styles.actionButton, styles.deleteButton]}
+                    onPress={confirmDeleteEntry}
+                  >
+                    <Feather name="trash-2" size={20} color={COLORS.error} />
+                  </TouchableOpacity>
+                </>
+              )}
             </>
           )}
         </View>
@@ -1043,9 +1331,8 @@ const CreateEntryScreen = ({
         ) : (
           <Text style={styles.previewTitle}>{title || "Untitled Entry"}</Text>
         )}
-
         {/* Formatting Toolbar - only in edit mode */}
-        {entryMode === "edit" && (
+        {entryMode === "edit" && !isServiceLocked && (
           <View style={styles.toolbar}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {/* <TouchableOpacity
@@ -1167,15 +1454,20 @@ const CreateEntryScreen = ({
             </ScrollView>
           </View>
         )}
-
+        {/* {renderTierInfo()} */}
+        {isServiceLocked && lockMessage && (
+          <View style={styles.lockMessageContainer}>
+            <Feather name="lock" size={20} color={COLORS.error} />
+            <Text style={styles.lockMessageText}>{lockMessage}</Text>
+          </View>
+        )}
         {/* Preview mode date displayed prominently */}
-        {entryMode === "preview" && (
+        {/* {entryMode === "preview" && (
           <View style={styles.previewDateContainer}>
             <Feather name="calendar" size={16} color={COLORS.textLight} />
             <Text style={styles.previewDateText}>{getFormattedDate()}</Text>
           </View>
-        )}
-
+        )} */}
         {/* Mood display if selected */}
         {selectedMood && (
           <View
@@ -1201,7 +1493,6 @@ const CreateEntryScreen = ({
             )}
           </View>
         )}
-
         {/* Tags display if any */}
         {tags.length > 0 && (
           <View
@@ -1228,7 +1519,6 @@ const CreateEntryScreen = ({
             </ScrollView>
           </View>
         )}
-
         {/* Content Input/Display */}
         {entryMode === "edit" ? (
           <TextInput
@@ -1250,7 +1540,7 @@ const CreateEntryScreen = ({
         )}
 
         {/* Images Display - enhanced for preview mode */}
-        {images.length > 0 && (
+        {(images.length > 0 || routeEntry?.originalImageCount > 0) && (
           <View
             style={[
               styles.imagesContainer,
@@ -1261,42 +1551,72 @@ const CreateEntryScreen = ({
               <Text style={styles.previewSectionTitle}>Photos</Text>
             )}
 
-            <FlatList
-              data={images}
-              keyExtractor={(item, index) => `image-${index}`}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              renderItem={({ item, index }) => (
-                <View
-                  style={[
-                    styles.imageWrapper,
-                    entryMode === "preview" && styles.previewImageWrapper,
-                  ]}
-                >
-                  <Image
-                    source={{ uri: item }}
+            {/* Show actual images if they exist */}
+            {images.length > 0 && (
+              <FlatList
+                data={images}
+                keyExtractor={(item, index) => `image-${index}`}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                renderItem={({ item, index }) => (
+                  <View
                     style={[
-                      styles.image,
-                      entryMode === "preview" && styles.previewImage,
+                      styles.imageWrapper,
+                      entryMode === "preview" && styles.previewImageWrapper,
                     ]}
-                  />
+                  >
+                    <Image
+                      source={{ uri: item }}
+                      style={[
+                        styles.image,
+                        entryMode === "preview" && styles.previewImage,
+                      ]}
+                    />
 
-                  {entryMode === "edit" && (
-                    <TouchableOpacity
-                      style={styles.removeImageButton}
-                      onPress={() => removeImage(index)}
-                    >
-                      <Feather name="trash-2" size={16} color={COLORS.white} />
-                    </TouchableOpacity>
-                  )}
+                    {entryMode === "edit" && (
+                      <TouchableOpacity
+                        style={styles.removeImageButton}
+                        onPress={() => removeImage(index)}
+                      >
+                        <Feather
+                          name="trash-2"
+                          size={16}
+                          color={COLORS.white}
+                        />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+              />
+            )}
+
+            {/* Show placeholder for imported entries that had images */}
+            {images.length === 0 && routeEntry?.originalImageCount > 0 && (
+              <View style={styles.mediaPlaceholder}>
+                <View style={styles.mediaPlaceholderHeader}>
+                  <Feather name="image" size={20} color={COLORS.textMuted} />
+                  <Text style={styles.mediaPlaceholderTitle}>
+                    Photos from Original Device
+                  </Text>
                 </View>
-              )}
-            />
+                <Text style={styles.mediaPlaceholderText}>
+                  This entry had {routeEntry.originalImageCount} photo
+                  {routeEntry.originalImageCount > 1 ? "s" : ""} on your
+                  original device
+                </Text>
+                {routeEntry.imageFilenames &&
+                  routeEntry.imageFilenames.length > 0 && (
+                    <Text style={styles.mediaFilenames}>
+                      Files: {routeEntry.imageFilenames.join(", ")}
+                    </Text>
+                  )}
+              </View>
+            )}
           </View>
         )}
 
         {/* Audio Notes Display - enhanced for preview mode */}
-        {audioNotes.length > 0 && (
+        {(audioNotes.length > 0 || routeEntry?.originalAudioCount > 0) && (
           <View
             style={[
               styles.audioNotesContainer,
@@ -1312,54 +1632,86 @@ const CreateEntryScreen = ({
               Voice Notes
             </Text>
 
-            {audioNotes.map((note) => (
-              <View
-                key={note.id}
-                style={[
-                  styles.audioNoteCard,
-                  entryMode === "preview" && styles.previewAudioNoteCard,
-                ]}
-              >
-                <TouchableOpacity
+            {/* Show actual audio notes if they exist */}
+            {audioNotes
+              .filter((note) => !note.isPlaceholder)
+              .map((note) => (
+                <View
+                  key={note.id}
                   style={[
-                    styles.playButton,
-                    playingAudio === note.id && styles.playingButton,
+                    styles.audioNoteCard,
+                    entryMode === "preview" && styles.previewAudioNoteCard,
                   ]}
-                  onPress={() =>
-                    playingAudio === note.id ? stopAudio() : playAudio(note)
-                  }
                 >
-                  <Feather
-                    name={playingAudio === note.id ? "pause" : "play"}
-                    size={18}
-                    color={COLORS.primary}
-                  />
-                </TouchableOpacity>
-
-                <View style={styles.audioNoteInfo}>
-                  <Text style={styles.audioNoteName}>{note.name}</Text>
-                  <Text style={styles.audioNoteDate}>
-                    {format(new Date(note.date), "MMM d, h:mm a")}
-                  </Text>
-                </View>
-
-                {entryMode === "edit" && (
                   <TouchableOpacity
-                    style={styles.removeAudioButton}
-                    onPress={() => removeAudioNote(note.id)}
+                    style={[
+                      styles.playButton,
+                      // playingAudio === note.id && styles.playingButton,
+                    ]}
+                    onPress={() =>
+                      playingAudio === note.id ? stopAudio() : playAudio(note)
+                    }
                   >
                     <Feather
-                      name="trash-2"
-                      size={16}
-                      color={COLORS.textLight}
+                      name={playingAudio === note.id ? "pause" : "play"}
+                      size={18}
+                      color={COLORS.primary}
                     />
                   </TouchableOpacity>
-                )}
-              </View>
-            ))}
+
+                  <View style={styles.audioNoteInfo}>
+                    <Text style={styles.audioNoteName}>{note.name}</Text>
+                    <Text style={styles.audioNoteDate}>
+                      {format(new Date(note.date), "MMM d, h:mm a")}
+                    </Text>
+                  </View>
+
+                  {entryMode === "edit" && (
+                    <TouchableOpacity
+                      style={styles.removeAudioButton}
+                      onPress={() => removeAudioNote(note.id)}
+                    >
+                      <Feather
+                        name="trash-2"
+                        size={16}
+                        color={COLORS.textLight}
+                      />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))}
+
+            {/* Show placeholder for imported entries that had audio */}
+            {audioNotes.filter((note) => !note.isPlaceholder).length === 0 &&
+              routeEntry?.originalAudioCount > 0 && (
+                <View style={styles.mediaPlaceholder}>
+                  <View style={styles.mediaPlaceholderHeader}>
+                    <Feather name="mic" size={20} color={COLORS.textMuted} />
+                    <Text style={styles.mediaPlaceholderTitle}>
+                      Voice Notes from Original Device
+                    </Text>
+                  </View>
+                  <Text style={styles.mediaPlaceholderText}>
+                    This entry had {routeEntry.originalAudioCount} voice note
+                    {routeEntry.originalAudioCount > 1 ? "s" : ""} on your
+                    original device
+                  </Text>
+                  {routeEntry.audioNotes &&
+                    routeEntry.audioNotes.some(
+                      (note) => note.isPlaceholder
+                    ) && (
+                      <Text style={styles.mediaFilenames}>
+                        Files:{" "}
+                        {routeEntry.audioNotes
+                          .filter((note) => note.isPlaceholder)
+                          .map((note) => note.originalFilename)
+                          .join(", ")}
+                      </Text>
+                    )}
+                </View>
+              )}
           </View>
         )}
-
         {/* Bottom padding for scrolling */}
         <View style={{ height: 80 }} />
       </KeyboardAwareScrollView>
@@ -1962,6 +2314,105 @@ const styles = StyleSheet.create({
     marginTop: 10,
     color: COLORS.textLight,
     fontSize: 16,
+  },
+  tierInfoContainer: {
+    backgroundColor: COLORS.white,
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  tierLimitsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  tierLimitText: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    fontWeight: "500",
+  },
+  upgradeButton: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  upgradeButtonText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  // Update existing toolbar styles for better layout
+  toolbar: {
+    flexDirection: "row",
+    backgroundColor: COLORS.white,
+    borderRadius: 10,
+    padding: 4,
+    marginBottom: 10, // Reduced from 15
+    ...shadowStyles.small,
+    alignItems: "center",
+    width: "100%",
+    justifyContent: "center",
+  },
+  // Style for when image limit is reached
+  toolbarButtonDisabled: {
+    opacity: 0.5,
+    backgroundColor: COLORS.border,
+  },
+  toolbarButtonDisabledText: {
+    color: COLORS.textMuted,
+  },
+  lockMessageContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF3E0",
+    padding: 12,
+    marginHorizontal: 15,
+    marginBottom: 15,
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.error,
+  },
+  lockMessageText: {
+    flex: 1,
+    marginLeft: 10,
+    fontSize: 14,
+    color: COLORS.text,
+    lineHeight: 20,
+  },
+  // Add these to your existing styles in CreateEntryScreen.jsx
+  mediaPlaceholder: {
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: 12,
+    padding: 16,
+    marginVertical: 10,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    borderStyle: "dashed",
+  },
+  mediaPlaceholderHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  mediaPlaceholderTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: COLORS.primaryDark,
+    marginLeft: 8,
+  },
+  mediaPlaceholderText: {
+    fontSize: 14,
+    color: COLORS.textLight,
+    marginBottom: 8,
+    lineHeight: 20,
+  },
+  mediaFilenames: {
+    fontSize: 12,
+    color: COLORS.textMinted,
+    fontStyle: "italic",
+    lineHeight: 16,
   },
 });
 

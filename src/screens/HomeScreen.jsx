@@ -9,6 +9,8 @@ import {
   FlatList,
   StyleSheet,
   ActivityIndicator,
+  Alert,
+  Animated,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
@@ -17,6 +19,11 @@ import { useJournal } from "../context/JournalContext";
 import { format } from "date-fns";
 import ServiceInfoModal from "../components/ServiceInfoModal";
 import storageManager from "../services/StoreManager";
+import serviceLockManager from "../services/ServiceLockManager";
+
+import UpdateService from "../services/UpdateService";
+import GlowingSettingsButton from "../components/GlowingSettingsButton";
+import NotificationService from "../services/NotificationService";
 
 // Constants
 const COLORS = {
@@ -79,7 +86,14 @@ const shadowStyles = {
 };
 
 // Components
-const Header = ({ name, date, onSettingsPress, onNamePress }) => (
+const Header = ({
+  name,
+  date,
+  onSettingsPress,
+  onNamePress,
+  lockStatus,
+  hasUpdate,
+}) => (
   <View style={styles.headerContainer}>
     <TouchableOpacity onPress={onNamePress}>
       <View style={styles.nameContainer}>
@@ -93,27 +107,22 @@ const Header = ({ name, date, onSettingsPress, onNamePress }) => (
       </View>
       <Text style={styles.headerDate}>{date}</Text>
     </TouchableOpacity>
-    <TouchableOpacity
-      style={styles.notificationButton}
-      onPress={onSettingsPress}
-      accessibilityLabel="Settings"
-    >
-      <Feather name="settings" size={20} color={COLORS.primary} />
-    </TouchableOpacity>
-  </View>
-);
 
-const SearchBar = ({ value, onChangeText }) => (
-  <View style={styles.searchContainer}>
-    <Feather name="search" size={20} color={COLORS.textLight} />
-    <TextInput
-      placeholder="Search your journal entries"
-      value={value}
-      onChangeText={onChangeText}
-      style={styles.searchInput}
-      placeholderTextColor={COLORS.textLight}
-      accessibilityLabel="Search journal entries"
-    />
+    <View style={styles.headerActions}>
+      {/* Show lock icon if service is locked */}
+      {lockStatus?.isLocked && (
+        <View style={styles.lockIndicator}>
+          <Feather name="lock" size={16} color={COLORS.error} />
+        </View>
+      )}
+
+      <GlowingSettingsButton
+        onPress={onSettingsPress}
+        style={styles.notificationButton}
+        iconColor={COLORS.primary}
+        iconSize={20}
+      />
+    </View>
   </View>
 );
 
@@ -259,6 +268,12 @@ const MonthPill = ({ month, isCurrent, isPast, onPress }) => {
 };
 
 const JournalEntryCard = ({ entry, onPress }) => {
+  // Add validation
+  if (!entry) {
+    console.warn("JournalEntryCard: Received null/undefined entry");
+    return null;
+  }
+
   const moodIcon = useMemo(() => {
     if (!entry.mood) return "star";
 
@@ -284,13 +299,21 @@ const JournalEntryCard = ({ entry, onPress }) => {
     }
   }, [entry.mood]);
 
-  // Format the entry date
+  // Format the entry date with validation
   const formattedDate = useMemo(() => {
-    if (!entry.date) return "";
-    const date = new Date(entry.date);
-    return format(date, "MMM d");
-  }, [entry.date]);
+    if (!entry.date) {
+      console.warn("JournalEntryCard: Entry has no date:", entry.id);
+      return "";
+    }
 
+    try {
+      const date = safeDateConversion(entry.date);
+      return format(date, "MMM d");
+    } catch (error) {
+      console.error("JournalEntryCard: Error formatting date:", error);
+      return "";
+    }
+  }, [entry.date]);
   // Create a preview from the content if needed
   const preview = useMemo(() => {
     if (entry.preview) return entry.preview;
@@ -303,12 +326,24 @@ const JournalEntryCard = ({ entry, onPress }) => {
     return entry.content || "No content";
   }, [entry.content, entry.preview]);
 
+  // Handle press with entry validation
+  const handlePress = () => {
+    console.log("JournalEntryCard: Card pressed for entry:", entry.id);
+
+    if (!entry.id) {
+      console.error("JournalEntryCard: Cannot press entry without ID");
+      return;
+    }
+
+    onPress(entry);
+  };
+
   return (
-    <TouchableOpacity style={styles.entryCard} onPress={onPress}>
+    <TouchableOpacity style={styles.entryCard} onPress={handlePress}>
       <View style={styles.entryContent}>
         <View style={styles.entryHeader}>
           <Text style={styles.entryTitle} numberOfLines={1}>
-            {entry.title}
+            {entry.title || "Untitled Entry"}
           </Text>
           <View style={styles.entryDateBadge}>
             <Feather
@@ -343,6 +378,38 @@ const EmptyState = ({ onCreatePress }) => (
   </View>
 );
 
+const safeDateConversion = (dateValue) => {
+  if (!dateValue) {
+    console.warn("safeDateConversion: Received null/undefined date");
+    return new Date(); // Return current date as fallback
+  }
+
+  try {
+    // If it's already a Date object
+    if (dateValue instanceof Date) {
+      if (isNaN(dateValue.getTime())) {
+        console.warn("safeDateConversion: Invalid Date object");
+        return new Date();
+      }
+      return dateValue;
+    }
+
+    // If it's a string or number, convert to Date
+    const convertedDate = new Date(dateValue);
+    if (isNaN(convertedDate.getTime())) {
+      console.warn(
+        "safeDateConversion: Could not convert to valid date:",
+        dateValue
+      );
+      return new Date();
+    }
+
+    return convertedDate;
+  } catch (error) {
+    console.error("safeDateConversion: Error converting date:", error);
+    return new Date();
+  }
+};
 // Main Component
 const HomeScreen = ({ navigation }) => {
   const [searchQuery, setSearchQuery] = useState("");
@@ -353,11 +420,19 @@ const HomeScreen = ({ navigation }) => {
   const [serviceMonths, setServiceMonths] = useState([]);
   const [showServiceInfoModal, setShowServiceInfoModal] = useState(false);
   const [serviceInfo, setServiceInfo] = useState(null);
+  const [serviceLockStatus, setServiceLockStatus] = useState(null);
+  const [hasUpdate, setHasUpdate] = useState(false);
 
   // Load service info on mount
   useEffect(() => {
     const loadServiceInfo = async () => {
       try {
+        if (serviceInfo) {
+          const lockStatus = await serviceLockManager.checkServiceYearStatus(
+            serviceInfo
+          );
+          setServiceLockStatus(lockStatus);
+        }
         const settings = await storageManager.getSettings();
 
         if (settings.serviceInfo) {
@@ -467,6 +542,25 @@ const HomeScreen = ({ navigation }) => {
     }, [entries, startDate, endDate])
   );
 
+  useEffect(() => {
+    const checkUpdatesAndNotifications = async () => {
+      try {
+        // Check for updates
+        const updateResult = await UpdateService.checkForUpdatesOnLaunch();
+        console.log("Launch update check:", updateResult);
+
+        // Check for notifications (only if no critical update)
+        if (updateResult.type !== "force_update") {
+          await NotificationService.checkAndShowNotifications();
+        }
+      } catch (error) {
+        console.error("Error checking updates and notifications:", error);
+      }
+    };
+
+    setTimeout(checkUpdatesAndNotifications, 2000);
+  }, []);
+
   // Handle service info save
   const handleServiceInfoSave = async (info) => {
     try {
@@ -487,7 +581,48 @@ const HomeScreen = ({ navigation }) => {
   const handleServiceInfoSkip = () => {
     setShowServiceInfoModal(false);
   };
+  const serializeEntryForNavigation = (entry) => {
+    if (!entry) return null;
 
+    // Safely convert dates to timestamps
+    const safeConvertDate = (dateValue) => {
+      if (!dateValue) return new Date().getTime(); // Default to current time
+
+      try {
+        const date = safeDateConversion(dateValue);
+        return date.getTime();
+      } catch (error) {
+        console.error(
+          "Error converting date for navigation:",
+          dateValue,
+          error
+        );
+        return new Date().getTime(); // Fallback to current time
+      }
+    };
+
+    return {
+      id: entry.id,
+      title: entry.title || "",
+      content: entry.content || "",
+      formattedContent: entry.formattedContent || null,
+      mood: entry.mood || null,
+      tags: entry.tags || [],
+      images: entry.images || [],
+      date: safeConvertDate(entry.date),
+      createdAt: safeConvertDate(entry.createdAt),
+      updatedAt: safeConvertDate(entry.updatedAt),
+      audioNotes: entry.audioNotes
+        ? entry.audioNotes.map((note) => ({
+            ...note,
+            date:
+              typeof note.date === "string"
+                ? note.date
+                : new Date(note.date || new Date()).toISOString(),
+          }))
+        : [],
+    };
+  };
   // Get the current month index
   const getCurrentMonthIndex = () => {
     const currentMonth = today.getMonth();
@@ -510,29 +645,6 @@ const HomeScreen = ({ navigation }) => {
     }, 1000);
   };
 
-  // Handle search
-  const handleSearch = (text) => {
-    setSearchQuery(text);
-
-    if (!text.trim()) {
-      setFilteredEntries(entries.slice(0, 10));
-      return;
-    }
-
-    // Search entries by title and content
-    const lowerCaseQuery = text.toLowerCase();
-    const filtered = entries.filter(
-      (entry) =>
-        entry.title.toLowerCase().includes(lowerCaseQuery) ||
-        (entry.content &&
-          entry.content.toLowerCase().includes(lowerCaseQuery)) ||
-        (entry.tags &&
-          entry.tags.some((tag) => tag.toLowerCase().includes(lowerCaseQuery)))
-    );
-
-    setFilteredEntries(filtered);
-  };
-
   // Handle month selection
   const handleMonthPress = async (month, index) => {
     // Navigate to timeline screen with this month selected
@@ -545,115 +657,145 @@ const HomeScreen = ({ navigation }) => {
 
   // Navigate to create new entry
   const handleCreateEntry = () => {
-    navigation.navigate("CreateEntry", {
-      mode: "edit",
-      dayCount: daysPassed,
-      totalDays: totalDays,
+    if (serviceLockStatus?.isLocked) {
+      Alert.alert(
+        "Service Year Ended",
+        "Your NYSC service year has concluded. You can still view your entries but cannot create new ones.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+
+    const today = new Date();
+    const todayEntry = entries.find((entry) => {
+      if (!entry.date) return false;
+      const entryDate = new Date(entry.date);
+      const todayNormalized = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate()
+      );
+      const entryNormalized = new Date(
+        entryDate.getFullYear(),
+        entryDate.getMonth(),
+        entryDate.getDate()
+      );
+      return todayNormalized.getTime() === entryNormalized.getTime();
     });
-  };
 
-  // Navigate to view/edit an entry
-  // In your HomeScreen.js where you handle entry press
-  const handleEntryPress = (entry) => {
-    // Create a function to safely serialize dates
-    const serializeEntry = (entry) => {
-      if (!entry) return null;
-
-      return {
-        ...entry,
-        // Safely handle date - check if it exists and what type it is
-        date: entry.date
-          ? entry.date instanceof Date
-            ? entry.date.getTime()
-            : typeof entry.date === "string"
-            ? new Date(entry.date).getTime()
-            : typeof entry.date === "number"
-            ? entry.date
-            : null
-          : null,
-
-        // Same safe handling for other date fields
-        createdAt: entry.createdAt
-          ? entry.createdAt instanceof Date
-            ? entry.createdAt.getTime()
-            : typeof entry.createdAt === "string"
-            ? new Date(entry.createdAt).getTime()
-            : typeof entry.createdAt === "number"
-            ? entry.createdAt
-            : null
-          : null,
-
-        updatedAt: entry.updatedAt
-          ? entry.updatedAt instanceof Date
-            ? entry.updatedAt.getTime()
-            : typeof entry.updatedAt === "string"
-            ? new Date(entry.updatedAt).getTime()
-            : typeof entry.updatedAt === "number"
-            ? entry.updatedAt
-            : null
-          : null,
-
-        // Handle audio notes if they exist
-        audioNotes: entry.audioNotes
-          ? entry.audioNotes.map((note) => ({
-              ...note,
-              date: note.date
-                ? typeof note.date === "string"
-                  ? note.date
-                  : new Date(note.date).toISOString()
-                : new Date().toISOString(),
-            }))
-          : [],
-      };
-    };
-
-    // Get all entries for this month, with safe date handling
-    const getMonthEntries = () => {
-      if (!entry.date) return [entry]; // Return just this entry if no date
-
-      // Convert entry date to a proper Date object
-      const entryDate =
-        typeof entry.date === "string"
-          ? new Date(entry.date)
-          : entry.date instanceof Date
-          ? entry.date
-          : typeof entry.date === "number"
-          ? new Date(entry.date)
-          : new Date();
-
-      return entries.filter((e) => {
-        if (!e.date) return false;
-
-        // Convert comparison date to a proper Date object
-        const eDate =
-          typeof e.date === "string"
-            ? new Date(e.date)
-            : e.date instanceof Date
-            ? e.date
-            : typeof e.date === "number"
-            ? new Date(e.date)
-            : null;
-
-        if (!eDate) return false;
-
-        return (
-          eDate.getMonth() === entryDate.getMonth() &&
-          eDate.getFullYear() === entryDate.getFullYear()
-        );
+    if (todayEntry) {
+      navigation.navigate("CreateEntry", {
+        mode: serviceLockStatus?.isLocked ? "preview" : "edit",
+        entry: serializeEntryForNavigation(todayEntry),
+        dayCount: daysPassed,
+        totalDays: totalDays,
       });
-    };
-
-    const monthEntries = getMonthEntries();
-
-    // Navigate with proper serialized data
-    navigation.navigate("CreateEntry", {
-      mode: "preview",
-      entry: serializeEntry(entry),
-      dayCount: daysPassed,
-      totalDays: totalDays,
-      monthEntries: monthEntries.map(serializeEntry),
-    });
+    } else {
+      navigation.navigate("CreateEntry", {
+        mode: "edit",
+        entry: null,
+        dayCount: daysPassed,
+        totalDays: totalDays,
+      });
+    }
   };
+
+  const handleEntryPress = (entry) => {
+    try {
+      console.log("HomeScreen: Entry pressed:", entry.id, entry.title);
+
+      // Validate that we have a proper entry
+      if (!entry || !entry.id) {
+        console.error("HomeScreen: Invalid entry data:", entry);
+        Alert.alert("Error", "Unable to open entry. Invalid entry data.");
+        return;
+      }
+
+      // Get month entries with safe date handling
+      const getMonthEntries = () => {
+        if (!entry.date) {
+          console.warn("HomeScreen: Entry has no date, returning single entry");
+          return [entry];
+        }
+
+        try {
+          // Safely convert entry date
+          const entryDate = safeDateConversion(entry.date);
+          const entryMonth = entryDate.getMonth();
+          const entryYear = entryDate.getFullYear();
+
+          console.log(
+            `HomeScreen: Finding entries for month ${
+              entryMonth + 1
+            }/${entryYear}`
+          );
+
+          const monthEntries = entries.filter((e) => {
+            if (!e.date) return false;
+
+            try {
+              const eDate = safeDateConversion(e.date);
+              return (
+                eDate.getMonth() === entryMonth &&
+                eDate.getFullYear() === entryYear
+              );
+            } catch (error) {
+              console.error("HomeScreen: Error filtering entry:", e.id, error);
+              return false;
+            }
+          });
+
+          // Sort entries by date (newest first)
+          monthEntries.sort((a, b) => {
+            const dateA = safeDateConversion(a.date);
+            const dateB = safeDateConversion(b.date);
+            return dateB.getTime() - dateA.getTime();
+          });
+
+          return monthEntries.length > 0 ? monthEntries : [entry];
+        } catch (error) {
+          console.error("HomeScreen: Error getting month entries:", error);
+          return [entry];
+        }
+      };
+
+      const monthEntries = getMonthEntries();
+      const serializedEntry = serializeEntryForNavigation(entry);
+      const serializedMonthEntries = monthEntries.map(
+        serializeEntryForNavigation
+      );
+
+      // Calculate service day count safely
+      let dayCount = null;
+      if (serviceInfo && serviceInfo.startDate && entry.date) {
+        try {
+          const startDate = safeDateConversion(serviceInfo.startDate);
+          const entryDate = safeDateConversion(entry.date);
+
+          const diffTime = Math.abs(entryDate.getTime() - startDate.getTime());
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          dayCount = diffDays + 1;
+        } catch (error) {
+          console.error("HomeScreen: Error calculating day count:", error);
+        }
+      }
+
+      const totalDays = serviceInfo?.totalDays || 365;
+
+      // Navigate to CreateEntry screen
+      navigation.navigate("CreateEntry", {
+        mode: "preview",
+        entry: serializedEntry,
+        dayCount: dayCount,
+        totalDays: totalDays,
+        monthEntries: serializedMonthEntries,
+      });
+    } catch (error) {
+      console.error("HomeScreen: Error in handleEntryPress:", error);
+      Alert.alert("Error", "Unable to open entry. Please try again.");
+    }
+  };
+
   // Handle notification press
   const handleSettingsPress = () => {
     // Navigation to notifications or show notification modal
@@ -710,6 +852,8 @@ const HomeScreen = ({ navigation }) => {
                   date={formattedDate}
                   onSettingsPress={handleSettingsPress}
                   onNamePress={handleNamePress}
+                  lockStatus={serviceLockStatus}
+                  hasUpdate={hasUpdate}
                 />
                 {/* <SearchBar value={searchQuery} onChangeText={handleSearch} /> */}
               </View>
@@ -726,7 +870,15 @@ const HomeScreen = ({ navigation }) => {
                   onPress={() => setShowServiceInfoModal(true)}
                 />
               )}
-
+              {serviceLockStatus?.reason === "GRACE_PERIOD" && (
+                <View style={styles.gracePeriodWarning}>
+                  <Feather name="clock" size={16} color={COLORS.error} />
+                  <Text style={styles.gracePeriodText}>
+                    Service year ended. {serviceLockStatus.daysRemaining} days
+                    left to add final entries.
+                  </Text>
+                </View>
+              )}
               {serviceInfo && serviceMonths.length > 0 ? (
                 <ServiceMonthsTimeline
                   months={serviceMonths}
@@ -796,13 +948,13 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   headerTitle: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: "700",
     color: COLORS.text,
     marginBottom: 4,
   },
   headerDate: {
-    fontSize: 14,
+    fontSize: 12,
     color: COLORS.textLight,
     fontWeight: "500",
   },
@@ -1096,6 +1248,32 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: "600",
     fontSize: 14,
+  },
+  lockIndicator: {
+    marginRight: 10,
+    padding: 4,
+  },
+  gracePeriodWarning: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF3E0",
+    padding: 12,
+    marginHorizontal: 20,
+    marginBottom: 15,
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.error,
+  },
+  gracePeriodText: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 13,
+    color: COLORS.text,
+    fontWeight: "500",
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
   },
 });
 
